@@ -43,6 +43,11 @@ DEFAULTS: dict = {
     # live source for the bars: no hooks, no status line, no restart needed.
     "read_account_usage": True,
     "usage_file": None,
+    "sessions_dir": None,
+    # Once the editor running a session is gone the session is over, so we do
+    # not wait out idle_grace_seconds; just long enough not to flicker while it
+    # restarts.
+    "closed_grace_seconds": 8,
     "watch_interval": 2.0,
     # A transcript touched more recently than this counts as still working.
     "watch_working_seconds": 12.0,
