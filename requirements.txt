@@ -1,0 +1,3 @@
+# Unica dipendenza: serve solo per disegnare i frame 240x240.
+# Il client del dispositivo e gli hook usano esclusivamente la libreria standard.
+Pillow>=10.0

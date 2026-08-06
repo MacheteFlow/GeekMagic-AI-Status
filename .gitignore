@@ -1,0 +1,22 @@
+# Configurazione locale: contiene l'IP della propria rete
+config.json
+
+# Il backup del dispositivo resta locale: contiene dati personali (SSID della
+# rete, citta' impostata per il meteo, immagini caricate) e le pagine del web
+# console, che sono materiale di GeekMagic e non va ridistribuito.
+backup/
+
+# Cache dei frame caricati sul dispositivo e dati di sessione
+.cache/
+
+# Anteprime generate durante le prove
+prev_*.png
+preview*.png
+
+# Log del daemon: contengono l'indirizzo del dispositivo sulla rete locale
+*.log
+
+__pycache__/
+*.pyc
+.venv/
+venv/

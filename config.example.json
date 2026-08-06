@@ -1,0 +1,14 @@
+{
+  "device_host": "192.168.1.42",
+
+  "listen_host": "127.0.0.1",
+  "listen_port": 8787,
+  "log_level": "INFO",
+
+  "idle_grace_seconds": 180,
+  "min_push_interval": 0.6,
+
+  "font_path": "",
+  "jpeg_quality": 88,
+  "max_cached_frames": 60
+}
