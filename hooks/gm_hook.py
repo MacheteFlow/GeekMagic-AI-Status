@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -79,6 +80,29 @@ def cached_session(session: str) -> dict:
     return {}
 
 
+def journal(event: str, status: str, model: str) -> None:
+    """Append one line per hook invocation, for finding out what actually fires.
+
+    WAITING is the most useful of the three states and the hardest to be sure
+    about: it depends on Claude Code emitting Notification, and how often that
+    happens depends on how permissions are set. Rather than assume, this records
+    every event so a day of ordinary work answers the question.
+
+    Kept small and truncated in one go: a diagnostic that fills the disk would
+    be worse than the uncertainty it resolves.
+    """
+    path = os.path.join(CACHE_DIR, "hook-events.log")
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        if os.path.exists(path) and os.path.getsize(path) > 256_000:
+            os.replace(path, path + ".1")
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(f"{stamp}\t{event}\t{status}\t{model}\n")
+    except OSError:
+        pass
+
+
 def post(path: str, payload: dict) -> None:
     body = json.dumps(payload).encode()
     req = urllib.request.Request(
@@ -96,8 +120,10 @@ def main() -> int:
     status = (sys.argv[1] if len(sys.argv) > 1 else "working").lower()
     event = read_event()
     session = str(event.get("session_id") or "default")
+    name = str(event.get("hook_event_name") or "?")
 
     if status == "clear":
+        journal(name, status, "")
         post("/clear", {"session": session})
         return 0
 
@@ -112,6 +138,7 @@ def main() -> int:
     if not model:
         model = "claude"
 
+    journal(name, status, model)
     post("/state", {
         "session": session,
         "provider": PROVIDER,

@@ -20,6 +20,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from .apps import BUILTIN_APPS, AppDetector, rules_from_config
@@ -116,6 +117,9 @@ class Controller:
         self.last_push = 0.0
         self.last_reconcile = 0.0
         self.idle_since: float | None = None
+        # Consecutive device failures, and when it is worth trying again.
+        self.failures = 0
+        self.retry_at = 0.0
 
         self.state_file = Path(cfg["state_file"])
         saved = self._load_state()
@@ -448,6 +452,34 @@ class Controller:
                 log.warning("delete %s failed: %s", name, exc)
             self.known_frames.pop(name, None)
 
+    def _note_failure(self, what: str, exc: Exception) -> None:
+        """Record a device failure and back off before trying again.
+
+        Unplug the device and every attempt costs the full timeout across all
+        its retries. Retrying immediately after that means hammering a network
+        that has nothing to answer, filling the log with the same line forever.
+
+        The delay doubles up to a ceiling. Only the escalation is logged, not
+        each attempt: the spam is half of what makes this worth fixing.
+        """
+        self.failures += 1
+        base = self.cfg.get("retry_backoff_base", 1.0)
+        ceiling = self.cfg.get("retry_backoff_max", 60.0)
+        delay = min(base * (2 ** (self.failures - 1)), ceiling)
+        self.retry_at = time.time() + delay
+        if self.failures == 1 or delay >= ceiling and self.failures % 20 == 0:
+            log.warning("%s: %s -- retrying in %.0fs", what, exc, delay)
+        elif delay < ceiling:
+            log.warning("%s (attempt %d) -- retrying in %.0fs",
+                        what, self.failures, delay)
+
+    def _note_success(self) -> None:
+        if self.failures:
+            log.info("device responding again after %d failed attempts",
+                     self.failures)
+        self.failures = 0
+        self.retry_at = 0.0
+
     def _reconcile(self, now: float) -> None:
         """Check the device is really showing what we believe it is.
 
@@ -471,7 +503,7 @@ class Controller:
         try:
             theme = self.dev.get_theme()
         except DeviceError as exc:
-            log.warning("reconcile failed: %s", exc)
+            self._note_failure("reconcile failed", exc)
             return
         if theme == THEME_PHOTO_ALBUM:
             return
@@ -492,6 +524,11 @@ class Controller:
 
         grace = self.cfg.get("idle_grace_seconds", 180)
         now = time.time()
+
+        # Nothing here can succeed while the device is unreachable, and trying
+        # anyway is what turns an unplugged cable into a retry storm.
+        if now < self.retry_at:
+            return
 
         # Back to the stock weather when there is no session at all, when the
         # editor that was running one has been closed, or when the last session
@@ -528,8 +565,9 @@ class Controller:
                 self.last_push = time.time()
                 log.info("screen -> %s %s [%s]",
                          winner.provider, winner.model, winner.status)
+            self._note_success()
         except DeviceError as exc:
-            log.warning("push failed: %s", exc)
+            self._note_failure("push failed", exc)
             self.last_push = time.time()
 
     def run(self) -> None:
@@ -611,12 +649,45 @@ def make_handler(ctrl: Controller):
     return Handler
 
 
+def configure_logging(cfg: dict) -> None:
+    """Log to the console, and to a rotating file when one is configured.
+
+    This runs unattended for weeks, so an ever-growing file is not an option.
+    Rotation is set up here rather than by redirecting the launcher's output,
+    which is what a background service would otherwise leave to grow forever.
+    """
+    level = getattr(logging, cfg.get("log_level", "INFO").upper(), logging.INFO)
+    fmt = logging.Formatter("%(asctime)s %(levelname)-7s %(message)s", "%H:%M:%S")
+
+    root = logging.getLogger()
+    root.setLevel(level)
+    for existing in list(root.handlers):
+        root.removeHandler(existing)
+
+    console = logging.StreamHandler()
+    console.setFormatter(fmt)
+    root.addHandler(console)
+
+    path = cfg.get("log_file")
+    if not path:
+        return
+    try:
+        target = Path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        rotating = RotatingFileHandler(
+            target,
+            maxBytes=int(cfg.get("log_max_bytes", 512_000)),
+            backupCount=int(cfg.get("log_backups", 2)),
+            encoding="utf-8",
+        )
+        rotating.setFormatter(fmt)
+        root.addHandler(rotating)
+    except OSError as exc:
+        log.warning("could not open the log file %s: %s", path, exc)
+
+
 def serve(cfg: dict) -> None:
-    logging.basicConfig(
-        level=getattr(logging, cfg.get("log_level", "INFO").upper(), logging.INFO),
-        format="%(asctime)s %(levelname)-7s %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    configure_logging(cfg)
     ctrl = Controller(cfg)
     threading.Thread(target=ctrl.run, name="pusher", daemon=True).start()
 

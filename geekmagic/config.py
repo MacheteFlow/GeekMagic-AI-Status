@@ -19,6 +19,17 @@ DEFAULTS: dict = {
     "listen_port": 8787,
     "state_file": str(ROOT / ".cache" / "frames.json"),
     "log_level": "INFO",
+    # Rotated by the daemon itself: it runs unattended for weeks, and a file
+    # the launcher merely redirects into would grow without limit.
+    "log_file": str(ROOT / ".cache" / "daemon.log"),
+    "log_max_bytes": 512_000,
+    "log_backups": 2,
+
+    # When the device stops answering -- unplugged, moved, rebooting -- each
+    # attempt already costs the full timeout across its retries. Waiting longer
+    # after each failure is what keeps that from becoming a retry storm.
+    "retry_backoff_base": 1.0,
+    "retry_backoff_max": 60.0,
 
     # --- screen behaviour
     # Seconds of inactivity before going back to the stock weather station.

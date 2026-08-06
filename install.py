@@ -1,4 +1,4 @@
-"""Guided installer, meant to be run by anyone.
+﻿"""Guided installer, meant to be run by anyone.
 
 It does everything that is needed, explaining each step and asking before it
 touches anything:
@@ -8,8 +8,9 @@ touches anything:
   3. saves the configuration
   4. backs up the device
   5. connects Claude Code (hooks + status line), keeping your own settings
-  6. optionally starts the daemon when the computer boots
-  7. shows a test frame and asks whether you saw it
+  6. optionally starts the daemon at logon, restarted by Windows if it stops
+  7. checks the daemon is actually running, since nothing moves without it
+  8. shows a test frame and asks whether you saw it
 
 Run it by double-clicking "Install.bat", or with:
 
@@ -108,7 +109,7 @@ def step_disclaimer() -> bool:
 
 
 def step_python() -> bool:
-    title("1/7", "Checking Python and dependencies")
+    title("1/8", "Checking Python and dependencies")
     print(f"  Python {sys.version.split()[0]} at {sys.executable}")
     if sys.version_info < (3, 10):
         warn("Python 3.10 or newer is required. Please upgrade and try again.")
@@ -136,7 +137,7 @@ def step_python() -> bool:
 
 
 def step_device() -> str | None:
-    title("2/7", "Looking for the device on your network")
+    title("2/8", "Looking for the device on your network")
     from geekmagic import discover
 
     nets = discover.candidate_networks()
@@ -174,7 +175,7 @@ def step_device() -> str | None:
 
 
 def step_config(host: str) -> None:
-    title("3/7", "Saving the configuration")
+    title("3/8", "Saving the configuration")
     path = ROOT / "config.json"
     config = {}
     if path.is_file():
@@ -189,7 +190,7 @@ def step_config(host: str) -> None:
 
 
 def step_backup(host: str) -> None:
-    title("4/7", "Backing up the device")
+    title("4/8", "Backing up the device")
     print("  Saves settings and images into backup/, so you can always go back.")
     print("  Nothing on the device is modified: this step only reads.")
     if not ask("Run the backup now?"):
@@ -214,7 +215,7 @@ def statusline_command() -> str:
 
 
 def step_claude() -> None:
-    title("5/7", "Connecting Claude Code")
+    title("5/8", "Connecting Claude Code")
     if not CLAUDE_DIR.is_dir():
         warn(f"{CLAUDE_DIR} not found: Claude Code does not seem to be installed.")
         print("  You can still drive the screen manually with gmctl.py.")
@@ -271,29 +272,85 @@ def step_claude() -> None:
     print("  Restart Claude Code for the changes to take effect.")
 
 
+TASK_NAME = "GeekMagic AI Status"
+
+
 def startup_dir() -> Path | None:
     if os.name != "nt":
         return None
     return Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup"
 
 
+def register_scheduled_task(exe: Path, repeat_minutes: int = 5) -> bool:
+    """Register a task that starts the daemon at logon and keeps it alive.
+
+    A shortcut in the Startup folder only ever starts it once. If the process
+    then dies, nothing brings it back and the screen sits on whatever it last
+    showed until somebody notices.
+
+    Two triggers do the work. One at logon, and one that simply runs the task
+    again every few minutes. With MultipleInstances set to IgnoreNew, a repeat
+    while the daemon is healthy is discarded, and a repeat after it has died
+    starts it again. This is deliberately not the scheduler's own "restart on
+    failure" setting: that applies only to triggered runs and depends on the
+    exit code, and testing showed a killed daemon was not restarted by it. A
+    repeating trigger cannot miss, because it never asks why the process is
+    gone -- only whether it is.
+
+    Registered for the current user, so no administrator rights are needed.
+    """
+    script = ROOT / "statusd.py"
+    ps = f"""
+$ErrorActionPreference = 'Stop'
+$action = New-ScheduledTaskAction -Execute '{exe}' -Argument '"{script}"' -WorkingDirectory '{ROOT}'
+$atLogon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$repeat = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+    -RepetitionInterval (New-TimeSpan -Minutes {repeat_minutes}) `
+    -RepetitionDuration (New-TimeSpan -Days 3650)
+$settings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+    -StartWhenAvailable -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
+Register-ScheduledTask -TaskName '{TASK_NAME}' -Action $action `
+    -Trigger $atLogon, $repeat -Settings $settings -Force -User $env:USERNAME | Out-Null
+"""
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        warn("Could not register the scheduled task:")
+        print((result.stderr or result.stdout or "").strip()[:400])
+        return False
+    return True
+
+
 def step_autostart() -> None:
-    title("6/7", "Start on boot")
-    folder = startup_dir()
-    if folder is None:
+    title("6/8", "Start on boot")
+    if os.name != "nt":
         print("  Automatic startup is only handled on Windows here.")
-        print("  On Linux/macOS start the daemon with: python statusd.py")
+        print("  On Linux/macOS run the daemon under systemd --user or launchd,")
+        print("  with a restart-on-failure policy: python statusd.py")
         return
     print("  The daemon has to be running for the screen to change.")
-    print("  It can start on its own at every boot, with no window on screen.")
+    print("  It can start at every logon, with no window, and be started again")
+    print("  within a few minutes if it ever stops.")
     if not ask("Start it automatically?"):
         print("  No problem: launch it when you need it with 'Start daemon.bat'.")
         return
 
-    # pythonw opens no console window; the VBS wrapper avoids even the brief
-    # flash of a terminal at login.
+    # pythonw opens no console window.
     pythonw = Path(sys.executable).with_name("pythonw.exe")
     exe = pythonw if pythonw.is_file() else Path(sys.executable)
+
+    if register_scheduled_task(exe):
+        ok(f"Scheduled task '{TASK_NAME}' registered, with restart on failure")
+        print("  Remove it with uninstall.py, or from Task Scheduler.")
+        return
+
+    # Fall back to the Startup folder. It starts the daemon but cannot restart
+    # it, so say so rather than let it look equivalent.
+    folder = startup_dir()
     vbs = folder / "GeekMagic AI Status.vbs"
     vbs.write_text(
         'Set s = CreateObject("WScript.Shell")\n'
@@ -302,11 +359,54 @@ def step_autostart() -> None:
         encoding="utf-8",
     )
     ok(f"Created {vbs}")
-    print("  To undo it just delete that file, or run uninstall.py.")
+    warn("This starts the daemon at logon but will not restart it if it stops.")
+
+
+def daemon_alive(port: int = 8787, timeout: float = 2.0) -> bool:
+    import urllib.error
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/health", timeout=timeout
+        ) as resp:
+            return resp.status == 200
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def step_daemon() -> None:
+    """Nothing on screen changes unless this is running, so check that it is.
+
+    Testing the device alone was misleading: setup could end saying everything
+    works while the part that drives the screen had never started.
+    """
+    title("7/8", "The daemon")
+    if daemon_alive():
+        ok("Already running")
+        return
+
+    print("  Not running yet. Starting it to confirm it works...")
+    creation = 0x00000008 if os.name == "nt" else 0     # detached, no console
+    try:
+        subprocess.Popen(
+            [sys.executable, str(ROOT / "statusd.py")],
+            cwd=str(ROOT), creationflags=creation,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        warn(f"Could not start it: {exc}")
+        return
+
+    for _ in range(15):
+        time.sleep(1)
+        if daemon_alive():
+            ok("Running and answering on 127.0.0.1:8787")
+            return
+    warn("It did not come up. Run 'python statusd.py' by hand to see why.")
 
 
 def step_test(host: str) -> None:
-    title("7/7", "Final check")
+    title("8/8", "Final check")
     print("  I will show a test frame on the device and then put the weather back.")
     if not ask("Go ahead?"):
         return
@@ -371,6 +471,7 @@ def main() -> int:
     step_backup(host)
     step_claude()
     step_autostart()
+    step_daemon()
     step_test(host)
 
     print(f"\n{'=' * 62}")

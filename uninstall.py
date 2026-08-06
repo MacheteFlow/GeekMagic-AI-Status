@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -89,12 +90,28 @@ def clean_autostart() -> None:
     if os.name != "nt":
         print("  Nothing to do on this system.")
         return
+    done = False
+
+    # The scheduled task is what recent installs create; the Startup shortcut
+    # is the older fallback. Both are removed, since a machine may carry either.
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+         "Unregister-ScheduledTask -TaskName 'GeekMagic AI Status' "
+         "-Confirm:$false -ErrorAction Stop"],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        ok("Scheduled task removed")
+        done = True
+
     vbs = Path(os.environ["APPDATA"]) / \
         "Microsoft/Windows/Start Menu/Programs/Startup/GeekMagic AI Status.vbs"
     if vbs.is_file():
         vbs.unlink()
         ok(f"Removed {vbs.name}")
-    else:
+        done = True
+
+    if not done:
         print("  It was not enabled.")
 
 

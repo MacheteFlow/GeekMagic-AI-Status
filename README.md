@@ -138,6 +138,16 @@ To undo all of it: **`Uninstall.bat`**, or `python uninstall.py`.
   you enabled start-on-boot. It must be running for the screen to change.
 - Restart Claude Code.
 
+On Windows, start-on-boot registers a scheduled task with two triggers: one at
+logon, and one that runs the task again every few minutes. Because a second
+instance is discarded while the daemon is healthy, the repeat does nothing until
+the daemon is gone, and then starts it. This is deliberately not the scheduler's
+own restart-on-failure setting — that only applies to triggered runs and depends
+on the exit code, and a killed daemon was not restarted by it when tested.
+
+The daemon also rotates its own log, in `.cache/daemon.log`. A background service
+whose output is merely redirected into a file grows one forever.
+
 ## Works with other AI tools too
 
 The daemon is not tied to Claude Code. It gathers state from four sources, and
@@ -213,6 +223,7 @@ python gmctl.py preview --model gpt-5 --status waiting --five-hour 80
 python gmctl.py show   --model claude-opus-5 --status working   # writes to device
 python gmctl.py state  --model x --status working               # goes via daemon
 python gmctl.py status                  # daemon internals
+python gmctl.py events                  # which hook events actually fire
 python gmctl.py stock  --theme 1        # back to the weather right now
 python gmctl.py gc                      # remove ai_*.jpg frames from the device
 ```

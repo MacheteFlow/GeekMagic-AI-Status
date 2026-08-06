@@ -133,6 +133,47 @@ def cmd_stock(cfg, args):
     print(f"theme set to {args.theme}")
 
 
+def cmd_events(cfg, args):
+    """Which hook events actually fire, and how often.
+
+    Answers the question no amount of reading the code can: WAITING depends on
+    Claude Code emitting Notification, and whether it does depends on how
+    permissions are set. If the count for waiting stays at zero after a day of
+    ordinary work, that state is theoretical and needs a different signal.
+    """
+    path = Path(cfg["state_file"]).parent / "hook-events.log"
+    if not path.is_file():
+        print("no events recorded yet.")
+        print("The hooks write here as they fire; give it a session of work.")
+        return
+
+    counts: dict[tuple[str, str], int] = {}
+    first = last = None
+    total = 0
+    for line in path.read_text("utf-8", errors="replace").splitlines():
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        stamp, event, status = parts[0], parts[1], parts[2]
+        counts[(event, status)] = counts.get((event, status), 0) + 1
+        first = first or stamp
+        last = stamp
+        total += 1
+
+    if not total:
+        print("the log exists but holds no readable entries.")
+        return
+
+    print(f"{total} events, {first} to {last}\n")
+    print(f"  {'event':<22} {'status':<10} {'count':>6}")
+    for (event, status), count in sorted(counts.items(), key=lambda kv: -kv[1]):
+        print(f"  {event:<22} {status:<10} {count:>6}")
+
+    if not any(status == "waiting" for _, status in counts):
+        print("\n  Note: nothing has produced waiting yet. Either no permission")
+        print("  prompt has come up, or Notification is not firing here.")
+
+
 def cmd_gc(cfg, args):
     """Delete every frame this project generated from the device."""
     dev = SmallTVUltra(cfg["device_host"])
@@ -181,6 +222,8 @@ def build_parser():
     sp.set_defaults(fn=cmd_clear)
 
     sub.add_parser("status", help="daemon internals").set_defaults(fn=cmd_status)
+    sub.add_parser("events", help="which hook events actually fire").set_defaults(
+        fn=cmd_events)
 
     sp = sub.add_parser("stock", help="go back to the stock theme")
     sp.add_argument("--theme", type=int, default=1)
