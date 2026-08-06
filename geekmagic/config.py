@@ -31,6 +31,10 @@ DEFAULTS: dict = {
     # state flips (working -> waiting -> working).
     "min_push_interval": 0.6,
     "poll_interval": 0.5,
+    # How often to check that the device is really showing our frame, so a
+    # reboot or a change made from its web page does not leave the screen stuck
+    # for good. Only runs while we are driving the screen. 0 disables it.
+    "reconcile_interval": 120,
     "session_ttl_seconds": 3600,
 
     # --- session detection

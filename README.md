@@ -90,6 +90,13 @@ The spinner does **not** work this way. It is a looping GIF the device animates
 by itself; pushing a frame every tenth of a second to animate it would mean
 tens of thousands of flash writes an hour.
 
+Because frames are pushed only on a change, what is on screen is remembered
+rather than checked, and a device that reboots would come back on its own theme
+while the daemon still believed its frame was up — silently, forever. So the
+theme is verified every couple of minutes and re-asserted if it has moved. Only
+while the daemon is driving the screen: once it has handed it back, whatever is
+on it is yours.
+
 ## Requirements
 
 - Python 3.10 or newer
@@ -215,6 +222,7 @@ python gmctl.py gc                      # remove ai_*.jpg frames from the device
 | `idle_grace_seconds` | `180` | idle time before returning to the weather; `0` = immediately |
 | `stock_theme` | `null` | theme to return to; `null` = whatever it was before we started |
 | `min_push_interval` | `0.6` | minimum seconds between two screen changes |
+| `reconcile_interval` | `120` | how often to check the device really shows our frame; `0` disables |
 | `max_cached_frames` | `60` | frames kept on the device before the oldest are dropped |
 | `font_path` | `""` | monospace font; empty = first one found on the system |
 | `jpeg_quality` | `88` | quality of the still frames |

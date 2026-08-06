@@ -104,11 +104,26 @@ class SmallTVUltra:
     _FILE_RE = re.compile(r"href='([^']+)'>([^<]+)</a></td><td>(\d+)</td>")
 
     def list_files(self, directory: str = "/image") -> list[dict]:
-        """List files. The firmware answers with an HTML table, not JSON."""
+        """List files. The firmware answers with an HTML table, not JSON.
+
+        Scraping markup is brittle by nature: a firmware update that changes the
+        table would make the pattern match nothing, and an empty list is a
+        perfectly ordinary answer, so the failure would pass silently. Callers
+        would conclude the device holds no frames and upload every one again,
+        every time -- exactly the flash wear the caching exists to avoid.
+
+        So an answer that clearly lists files but yields none is treated as a
+        failure rather than as an empty directory.
+        """
         html = self.get_text("/filelist?dir=" + directory)
         out = []
         for path, name, size_kb in self._FILE_RE.findall(html):
             out.append({"path": path, "name": name, "kb": int(size_kb)})
+        if not out and "href=" in html:
+            raise DeviceError(
+                f"/filelist?dir={directory}: the listing has entries but none "
+                f"could be read; the firmware's markup may have changed"
+            )
         return out
 
     def download(self, path: str) -> bytes:

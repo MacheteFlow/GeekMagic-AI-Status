@@ -113,6 +113,7 @@ class Controller:
         self.in_ai_mode = False
         self.shown_frame: str | None = None
         self.last_push = 0.0
+        self.last_reconcile = 0.0
         self.idle_since: float | None = None
 
         self.state_file = Path(cfg["state_file"])
@@ -430,6 +431,44 @@ class Controller:
                 log.warning("delete %s failed: %s", name, exc)
             self.known_frames.pop(name, None)
 
+    def _reconcile(self, now: float) -> None:
+        """Check the device is really showing what we believe it is.
+
+        Frames are only pushed when the state changes, and what is on screen is
+        otherwise remembered rather than verified. If the device restarts -- a
+        pulled cable, a power cut, a firmware reboot -- it comes back on its own
+        saved theme while we still think our frame is up, and the two never
+        agree again. Nothing errors, the screen simply stops following along.
+
+        Checking the theme now and then costs one small request and closes that
+        gap. Only while we are actually driving the screen: if we have already
+        handed it back, whatever is on it is the user's business, not ours.
+        """
+        interval = self.cfg.get("reconcile_interval", 120)
+        if interval <= 0 or not self.in_ai_mode or self.shown_frame is None:
+            return
+        if now - self.last_reconcile < interval:
+            return
+        self.last_reconcile = now
+
+        try:
+            theme = self.dev.get_theme()
+        except DeviceError as exc:
+            log.warning("reconcile failed: %s", exc)
+            return
+        if theme == THEME_PHOTO_ALBUM:
+            return
+
+        log.warning("device is on theme %s, not ours: re-asserting", theme)
+        # Whatever moved the theme may have cleared the images too, so the
+        # record of what is on the device cannot be trusted either.
+        self._sync_known_from_device()
+        # Dropping both makes the next tick set the mode up and push again.
+        # The stock state is deliberately kept: it still describes how the
+        # device looked before we started, which is what we owe it back.
+        self.in_ai_mode = False
+        self.shown_frame = None
+
     def _tick(self) -> None:
         with self.lock:
             winner = self._winner()
@@ -454,6 +493,8 @@ class Controller:
             self._restore_stock()
             return
         self.idle_since = None
+
+        self._reconcile(now)
 
         min_interval = self.cfg.get("min_push_interval", 0.6)
         if now - self.last_push < min_interval:
