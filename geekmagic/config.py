@@ -33,6 +33,17 @@ DEFAULTS: dict = {
     "poll_interval": 0.5,
     "session_ttl_seconds": 3600,
 
+    # --- session detection
+    # Watch Claude Code transcripts so sessions are picked up without waiting
+    # for a restart. Hooks are more accurate (only they know about WAITING),
+    # so anything a hook reported recently overrides what the watcher inferred.
+    "watch_transcripts": True,
+    "transcript_dir": None,
+    "watch_interval": 2.0,
+    # A transcript touched more recently than this counts as still working.
+    "watch_working_seconds": 12.0,
+    "hook_priority_seconds": 120,
+
     # --- frames
     # Monospace font to use; empty picks the first one available on the system.
     "font_path": "",

@@ -4,12 +4,21 @@ Show which **AI model is working right now** on the screen of a GeekMagic
 SmallTV-Ultra, colour-coded by state, with usage bars for your rate-limit
 windows. When no AI is active the screen goes back to the stock weather station.
 
+<p align="center">
+  <img src="docs/working.png" width="200" alt="WORKING: orange screen showing claude-opus-5">
+  <img src="docs/waiting.png" width="200" alt="WAITING: red screen showing claude-opus-5">
+  <img src="docs/idle.png" width="200" alt="IDLE: green screen showing claude-sonnet-4-5">
+</p>
+
 | State | Colour | When |
 |---|---|---|
 | `WORKING` | orange | the assistant is thinking |
 | `WAITING` | red | it asked you something and is waiting for your answer |
 | `IDLE` | green | session open but nothing happening |
 | — | stock weather station | no session active |
+
+The bars at the bottom show how much of your 5-hour and weekly usage windows
+you have spent. They only appear when that information is available.
 
 ## The original firmware is never touched
 

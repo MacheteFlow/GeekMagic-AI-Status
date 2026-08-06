@@ -24,6 +24,7 @@ from pathlib import Path
 
 from .device import THEME_PHOTO_ALBUM, DeviceError, SmallTVUltra
 from .render import frame_key, render_jpeg
+from .watcher import TranscriptWatcher
 
 log = logging.getLogger("geekmagic")
 
@@ -42,6 +43,9 @@ class Session:
     # rate_limits exactly as Claude Code reports it: {"five_hour": {...}, ...}
     usage: dict = field(default_factory=dict)
     updated: float = field(default_factory=time.time)
+    # "hook" when a Claude Code event reported it, "watch" when it was inferred
+    # from the transcript. Hooks are more accurate and win over the watcher.
+    source: str = "hook"
 
 
 @dataclass
@@ -61,6 +65,17 @@ class Controller:
             retries=cfg.get("retries", 2),
         )
         self.sessions: dict[str, Session] = {}
+        # Sessions inferred from transcripts, kept apart so hooks always win.
+        self.watched: dict[str, Session] = {}
+        self.last_watch = 0.0
+        self.watcher = (
+            TranscriptWatcher(
+                root=cfg.get("transcript_dir") or None,
+                working_window=cfg.get("watch_working_seconds", 12.0),
+                active_window=cfg.get("session_ttl_seconds", 3600),
+            )
+            if cfg.get("watch_transcripts", True) else None
+        )
         self.lock = threading.Lock()
         self.wake = threading.Event()
         self.stopping = threading.Event()
@@ -150,14 +165,71 @@ class Controller:
 
     # ------------------------------------------------------------ logic
 
+    def _live_sessions(self) -> dict[str, Session]:
+        """Hook-reported sessions, plus watched ones that no hook is covering.
+
+        When both sources describe the same session the hook wins, because it
+        knows about WAITING and the watcher cannot: from the outside a session
+        asking you a question looks exactly like an idle one.
+        """
+        ttl = self.cfg.get("session_ttl_seconds", 3600)
+        hook_priority = self.cfg.get("hook_priority_seconds", 120)
+        now = time.time()
+
+        live = {k: s for k, s in self.sessions.items() if now - s.updated < ttl}
+        for key, session in self.watched.items():
+            covering = live.get(key)
+            if covering and now - covering.updated < hook_priority:
+                continue
+            live[key] = session
+        return live
+
     def _winner(self) -> Session | None:
         """The session that decides what you see: most urgent, then most recent."""
-        ttl = self.cfg.get("session_ttl_seconds", 3600)
-        now = time.time()
-        live = [s for s in self.sessions.values() if now - s.updated < ttl]
+        live = list(self._live_sessions().values())
         if not live:
             return None
         return max(live, key=lambda s: (STATUS_RANK.get(s.status, 0), s.updated))
+
+    def _poll_watcher(self) -> None:
+        """Refresh the sessions inferred from transcripts."""
+        if self.watcher is None:
+            return
+        now = time.time()
+        if now - self.last_watch < self.cfg.get("watch_interval", 2.0):
+            return
+        self.last_watch = now
+        try:
+            found = self.watcher.poll()
+        except OSError as exc:
+            log.warning("transcript scan failed: %s", exc)
+            return
+        with self.lock:
+            watched = {}
+            for key, info in found.items():
+                watched[key] = Session(
+                    provider=info["provider"], model=info["model"],
+                    status=info["status"],
+                    usage=self._usage_from_cache(key),
+                    updated=now - info["age"], source="watch",
+                )
+            self.watched = watched
+
+    def _usage_from_cache(self, session_id: str) -> dict:
+        """Read the usage percentages the status line wrote for this session.
+
+        The status line is the only place Claude Code publishes rate_limits, and
+        it does not go through the hooks, so a watcher-driven session picks the
+        figures up from its cache file instead. Missing file simply means no
+        bars, which is the correct outcome: better nothing than a stale number.
+        """
+        path = self.state_file.parent / f"session-{session_id}.json"
+        try:
+            data = json.loads(path.read_text("utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        usage = data.get("usage")
+        return usage if isinstance(usage, dict) else {}
 
     def _capture_stock(self) -> StockState:
         """Read the configuration to put back when the session ends.
@@ -306,6 +378,7 @@ class Controller:
             self.wake.wait(timeout=poll)
             self.wake.clear()
             try:
+                self._poll_watcher()
                 self._tick()
             except Exception:  # a network hiccup must not kill the daemon
                 log.exception("error in the main loop")
