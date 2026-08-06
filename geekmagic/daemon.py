@@ -302,6 +302,17 @@ class Controller:
                 # stale True here would keep the screen lit forever.
                 session.open = sibling.open if sibling is not None else False
                 session.ended = sibling.ended if sibling is not None else False
+                # The hook is authoritative for the status, because only it can
+                # see WAITING. It is not authoritative for the model: it read
+                # that from the transcript when it fired, which was before the
+                # reply it belongs to existed. Switch model mid-session and the
+                # hook keeps naming the old one until the next hook fires, so
+                # the screen lagged by up to hook_priority_seconds. The watcher
+                # re-reads the transcript every cycle, so its answer is never
+                # older and usually newer.
+                if sibling is not None and sibling.model:
+                    session.model = sibling.model
+                    session.provider = sibling.provider
                 # Refreshed unconditionally, not just when missing: the figures
                 # climb while you work, and a hook only reports them once.
                 session.usage = self._usage_for(key) or session.usage
