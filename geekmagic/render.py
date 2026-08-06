@@ -153,11 +153,15 @@ def _fit_block(draw, text, max_w, max_h, sizes, font_override, min_single=14):
 
 
 def bucket(pct: float | None, step: int = USAGE_BUCKET) -> int | None:
-    """Round down to the step, so the set of cached frames converges."""
+    """Snap to the nearest step, so the set of cached frames stays finite.
+
+    Nearest rather than down: rounding 49% to 45% is a visible error for no
+    benefit, while 50% is off by one and the cache converges just the same.
+    """
     if pct is None:
         return None
     pct = max(0.0, min(100.0, float(pct)))
-    return min(100, int(pct // step) * step)
+    return min(100, int(round(pct / step)) * step)
 
 
 def _draw_bar(draw, y: int, label: str, pct: int, style: Style, font_override) -> None:

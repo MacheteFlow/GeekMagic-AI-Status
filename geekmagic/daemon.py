@@ -222,6 +222,18 @@ class Controller:
                 )
             self.watched = watched
 
+            # The two sources know different things about the same session and
+            # have to be merged rather than have one replace the other: only the
+            # hook knows about WAITING, only the watcher knows whether the
+            # editor is still open, and the usage figures may have landed in the
+            # cache after the hook already ran.
+            for key, session in self.sessions.items():
+                sibling = watched.get(key)
+                if sibling is not None:
+                    session.open = sibling.open
+                if not session.usage:
+                    session.usage = self._usage_from_cache(key)
+
     def _usage_from_cache(self, session_id: str) -> dict:
         """Read the usage percentages the status line wrote for this session.
 
