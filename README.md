@@ -75,6 +75,11 @@ restart at all. The watcher can tell `WORKING` from `IDLE`, but not `WAITING` â€
 from the outside, a session asking you a question looks exactly like an idle
 one. Hooks fill that in when they are available, and always take precedence.
 
+Work starts as soon as the transcript moves, but only real silence ends it. Two
+separate thresholds, deliberately far apart: with one, the ordinary pauses
+inside a task read as the task ending, and the screen flips between orange and
+green every few seconds while telling you it had finished when it had not.
+
 **A frame is uploaded once and then reused.** The filename is a hash of
 everything visible on it (provider, model, state, bars); if that frame is
 already on the device, only `/set?img=` is called. That matters on an ESP8266,
@@ -227,7 +232,8 @@ python gmctl.py gc                      # remove ai_*.jpg frames from the device
 | `font_path` | `""` | monospace font; empty = first one found on the system |
 | `jpeg_quality` | `88` | quality of the still frames |
 | `watch_transcripts` | `true` | detect sessions from transcripts, without a restart |
-| `watch_working_seconds` | `12` | transcript idle time after which a session counts as idle |
+| `watch_working_seconds` | `12` | transcript movement within this counts as working |
+| `watch_idle_seconds` | `50` | only silence this long counts as finished |
 
 ### About the usage bars
 

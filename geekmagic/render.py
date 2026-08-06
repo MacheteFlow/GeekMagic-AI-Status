@@ -48,7 +48,6 @@ STATUS_GLYPHS: dict[str, tuple[str, ...]] = {
     "idle": ("check",),
     "waiting": ("?",),
     "working": ("/", "-", "\\", "|"),
-    "error": ("×",),
 }
 
 # Milliseconds per spinner frame.
@@ -69,7 +68,6 @@ STYLES: dict[str, Style] = {
     "working": Style((214, 106, 16), (255, 255, 255), (255, 226, 190), (138, 66, 6)),
     "waiting": Style((186, 32, 32), (255, 255, 255), (255, 208, 208), (116, 14, 14)),
     "idle": Style((126, 191, 74), (255, 255, 255), (232, 250, 214), (76, 124, 40)),
-    "error": Style((90, 26, 120), (255, 255, 255), (228, 200, 245), (54, 12, 74)),
 }
 DEFAULT_STYLE = STYLES["idle"]
 

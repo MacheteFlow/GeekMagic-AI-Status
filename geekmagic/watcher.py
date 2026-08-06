@@ -71,16 +71,28 @@ class TranscriptWatcher:
         active_window: float = 900.0,
         provider: str = "anthropic",
         sessions_dir: Path | str | None = None,
+        idle_after: float = 50.0,
     ):
         self.root = Path(root) if root else DEFAULT_ROOT
         self.sessions_dir = Path(sessions_dir) if sessions_dir else DEFAULT_SESSIONS
         # A transcript touched more recently than this means "still busy".
         self.working_window = working_window
+        # ...and only silence lasting this long means "finished".
+        #
+        # The two thresholds are deliberately far apart. With a single one, the
+        # ordinary gaps within a task -- the seconds between tool calls, while an
+        # answer is being composed -- read as the task ending, and the screen
+        # flips between working and idle every few seconds. Measured on a real
+        # session: seven changes in one minute, throughout a single continuous
+        # task. Between the two thresholds the previous state simply holds.
+        self.idle_after = max(idle_after, working_window)
         # Older than this, a session with no running process is forgotten.
         self.active_window = active_window
         self.provider = provider
         # path -> (mtime seen, model found) so the tail is re-read only on change
         self._model_cache: dict[str, tuple[float, str]] = {}
+        # session id -> last status reported, held on to between the thresholds
+        self._status: dict[str, str] = {}
 
     # ------------------------------------------------------------ internals
 
@@ -150,6 +162,17 @@ class TranscriptWatcher:
 
     # ------------------------------------------------------------ public API
 
+    def _status_for(self, session_id: str, age: float) -> str:
+        """working, idle, or whatever it was, between the two thresholds."""
+        if age <= self.working_window:
+            status = "working"
+        elif age >= self.idle_after:
+            status = "idle"
+        else:
+            status = self._status.get(session_id, "idle")
+        self._status[session_id] = status
+        return status
+
     def poll(self) -> dict[str, dict]:
         """Return the live sessions, keyed by session id.
 
@@ -184,7 +207,7 @@ class TranscriptWatcher:
             if not model:
                 continue  # no assistant reply yet: nothing worth showing
 
-            status = "working" if age <= self.working_window else "idle"
+            status = self._status_for(session_id, age)
             # Several transcripts can move at once (subagents have their own).
             # Keep the freshest entry for a given id.
             previous = found.get(session_id)

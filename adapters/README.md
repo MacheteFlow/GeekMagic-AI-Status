@@ -24,7 +24,7 @@ The daemon listens on `127.0.0.1:8787` — local only, not reachable from the ne
 | `session` | no | identifies the session; defaults to `"default"` |
 | `provider` | no | small line at the top, may be empty |
 | `model` | yes | large line in the middle |
-| `status` | yes | `working` · `waiting` · `idle` · `error` |
+| `status` | yes | `working` · `waiting` · `idle` |
 | `usage` | no | bottom bars; missing windows are simply not drawn |
 
 ### `POST /clear`
@@ -41,8 +41,8 @@ weather station.
 The daemon's internal state — useful to see what is going on.
 
 With several sessions open at once, the most urgent one wins:
-`waiting` > `error` > `working` > `idle`. That way a question waiting for you is
-never hidden by another window that is still busy.
+`waiting` > `working` > `idle`. That way a question waiting for you is never
+hidden by another window that is still busy.
 
 ## Three ways to hook in, easiest first
 

@@ -156,7 +156,7 @@ def build_parser():
         sp.add_argument("--provider", default="anthropic")
         sp.add_argument("--model", default="claude-opus-5")
         sp.add_argument("--status", default="working",
-                        choices=["working", "waiting", "idle", "error"])
+                        choices=["working", "waiting", "idle"])
         sp.add_argument("--five-hour", type=float, default=None,
                         help="5-hour window usage, 0-100")
         sp.add_argument("--seven-day", type=float, default=None,

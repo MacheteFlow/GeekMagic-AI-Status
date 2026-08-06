@@ -50,7 +50,7 @@ def main() -> int:
     parser.add_argument("--provider", default="", help="small line at the top")
     parser.add_argument("--model", required=True, help="large line in the middle")
     parser.add_argument("--status", default="working",
-                        choices=["working", "waiting", "idle", "error"])
+                        choices=["working", "waiting", "idle"])
     parser.add_argument("--session", default=None,
                         help="session id; a new one per run by default")
     parser.add_argument("command", nargs=argparse.REMAINDER,

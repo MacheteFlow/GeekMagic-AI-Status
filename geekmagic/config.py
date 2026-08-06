@@ -66,8 +66,12 @@ DEFAULTS: dict = {
     # restarts.
     "closed_grace_seconds": 8,
     "watch_interval": 2.0,
-    # A transcript touched more recently than this counts as still working.
+    # A transcript touched more recently than this counts as still working...
     "watch_working_seconds": 12.0,
+    # ...and only silence lasting this long counts as finished. The gap between
+    # the two is what stops the screen flipping between working and idle during
+    # the ordinary pauses inside a single task.
+    "watch_idle_seconds": 50.0,
     "hook_priority_seconds": 120,
 
     # --- frames

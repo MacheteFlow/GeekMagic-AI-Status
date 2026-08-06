@@ -31,7 +31,7 @@ from .watcher import TranscriptWatcher
 log = logging.getLogger("geekmagic")
 
 # Increasing priority: with several sessions, the highest value wins.
-STATUS_RANK = {"idle": 0, "working": 1, "error": 2, "waiting": 3}
+STATUS_RANK = {"idle": 0, "working": 1, "waiting": 2}
 
 # Tie-break between sources reporting the same status. Applications are inferred
 # from file activity, which is a guess; a hook is the assistant telling us
@@ -85,6 +85,7 @@ class Controller:
             TranscriptWatcher(
                 root=cfg.get("transcript_dir") or None,
                 working_window=cfg.get("watch_working_seconds", 12.0),
+                idle_after=cfg.get("watch_idle_seconds", 50.0),
                 active_window=cfg.get("session_ttl_seconds", 3600),
                 sessions_dir=cfg.get("sessions_dir") or None,
             )
