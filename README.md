@@ -231,17 +231,26 @@ python gmctl.py gc                      # remove ai_*.jpg frames from the device
 
 ### About the usage bars
 
-They are read from `cachedUsageUtilization` in `~/.claude.json`, which Claude
-Code refreshes as it works. That source needs no hooks, no status line and no
-restart, so the bars are live from the moment the daemon starts. Only the usage
-block is read; the account identifiers alongside it are ignored.
+Two sources report these numbers, and neither is reliably ahead of the other, so
+the daemon compares their timestamps and takes the more recent.
 
-The status line remains a fallback for setups where that file is missing. It
-supplies the same figures through `rate_limits`, but only on Claude.ai Pro/Max
-plans and only from a session started after it was configured.
+`cachedUsageUtilization` in `~/.claude.json` needs nothing configured and works
+for a session that was already running. But Claude Code rewrites it on its own
+schedule — measured sitting unchanged through two minutes of active work, and
+opening the **Account & Usage** panel is one of the things that prompts a
+refresh. Only the usage block is read; the account identifiers beside it are
+ignored.
 
-If neither source has anything, the bars are simply left off the frame rather
-than drawn from a stale number.
+The status line is handed live figures on every render, so it is usually the
+fresher of the two. It only exists once you have configured it and started a
+session since, and only on Claude.ai Pro/Max plans.
+
+**If your bars look stale, the status line is what fixes it** — it is the
+component that keeps them moving, and it needs Claude Code restarted once after
+setup. Until then the figures come from the file and can be minutes behind.
+
+If neither source has anything, the bars are left off the frame rather than
+drawn from a number that may be wrong.
 
 ## Backup and restore
 

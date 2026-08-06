@@ -302,13 +302,17 @@ class Controller:
                 session.usage = self._usage_for(key) or session.usage
 
     def _usage_for(self, session_id: str, provider: str = "anthropic") -> dict:
-        """Current usage percentages, from the freshest source available.
+        """Current usage percentages, from whichever source is freshest.
 
-        The account-wide figures Claude Code keeps in ~/.claude.json are
-        preferred: they are refreshed as it works and need neither hooks nor a
-        restarted status line. The per-session cache written by the status line
-        is the fallback. If neither has anything, no bars get drawn, which beats
-        drawing a stale number.
+        There are two, and neither is reliably ahead of the other. The block in
+        ~/.claude.json needs nothing set up, but Claude Code rewrites it on its
+        own schedule and it can sit unchanged for minutes. The status line is
+        handed live figures on every render, but only exists once one has been
+        configured and a session started since.
+
+        So they are compared by timestamp rather than ranked, and the more
+        recent one wins. If neither has anything, no bars are drawn, which beats
+        drawing a number that may be wrong.
 
         The figures describe an Anthropic subscription, so they are never shown
         against another provider's model: a ChatGPT window must not display
@@ -316,17 +320,29 @@ class Controller:
         """
         if provider and provider.lower() != "anthropic":
             return {}
+
+        account, account_at = ({}, None)
         if self.account_usage is not None:
-            account = self.account_usage.read()
-            if account:
-                return account
+            account, account_at = self.account_usage.read_with_time()
+
+        line, line_at = ({}, None)
         path = self.state_file.parent / f"session-{session_id}.json"
         try:
             data = json.loads(path.read_text("utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
-        usage = data.get("usage")
-        return usage if isinstance(usage, dict) else {}
+            candidate = data.get("usage")
+            if isinstance(candidate, dict) and candidate:
+                line = candidate
+                stamp = data.get("ts")
+                line_at = float(stamp) if isinstance(stamp, (int, float)) else None
+        except (OSError, json.JSONDecodeError, ValueError):
+            pass
+
+        if not line:
+            return account
+        if not account:
+            return line
+        # An unknown timestamp loses to a known one rather than winning by luck.
+        return line if (line_at or 0) >= (account_at or 0) else account
 
     def _capture_stock(self) -> StockState:
         """Read the configuration to put back when the session ends.
