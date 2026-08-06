@@ -46,6 +46,9 @@ class Session:
     # "hook" when a Claude Code event reported it, "watch" when it was inferred
     # from the transcript. Hooks are more accurate and win over the watcher.
     source: str = "hook"
+    # True while the editor process is still running. An open session never
+    # times out: you can read an answer for ten minutes and it is still open.
+    open: bool = False
 
 
 @dataclass
@@ -176,7 +179,10 @@ class Controller:
         hook_priority = self.cfg.get("hook_priority_seconds", 120)
         now = time.time()
 
-        live = {k: s for k, s in self.sessions.items() if now - s.updated < ttl}
+        live = {
+            k: s for k, s in self.sessions.items()
+            if s.open or now - s.updated < ttl
+        }
         for key, session in self.watched.items():
             covering = live.get(key)
             if covering and now - covering.updated < hook_priority:
@@ -212,6 +218,7 @@ class Controller:
                     status=info["status"],
                     usage=self._usage_from_cache(key),
                     updated=now - info["age"], source="watch",
+                    open=info.get("open", False),
                 )
             self.watched = watched
 
@@ -339,9 +346,11 @@ class Controller:
         grace = self.cfg.get("idle_grace_seconds", 180)
         now = time.time()
 
-        # No sessions, or all quiet long enough -> back to the stock weather.
+        # Back to the stock weather when there is no session at all, or when the
+        # last one has been quiet long enough. A session whose editor is still
+        # open never expires: sitting and reading an answer is not "no AI".
         if winner is None or (
-            winner.status == "idle" and grace >= 0
+            not winner.open and winner.status == "idle" and grace >= 0
             and now - winner.updated >= grace
         ):
             if self.idle_since is None:
