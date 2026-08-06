@@ -84,6 +84,14 @@ class TranscriptWatcher:
 
     # ------------------------------------------------------------ internals
 
+    def registry_available(self) -> bool:
+        """Whether the session registry can be consulted at all.
+
+        Without it, "no running process" would be indistinguishable from "we
+        cannot tell", and every session would look closed.
+        """
+        return self.sessions_dir.is_dir()
+
     def open_session_ids(self) -> set[str]:
         """Session ids whose process is still running.
 
@@ -154,6 +162,11 @@ class TranscriptWatcher:
             return {}
         now = time.time()
         open_ids = self.open_session_ids()
+        # With the registry readable, a session with no running process is over,
+        # whether or not we personally watched it close. That is what stops a
+        # daemon started after the fact from waiting out the idle timeout on a
+        # session that ended long ago.
+        registry = self.registry_available()
         found: dict[str, dict] = {}
 
         for path in self.root.glob("*/*.jsonl"):
@@ -182,6 +195,7 @@ class TranscriptWatcher:
                     "status": status,
                     "age": age,
                     "open": is_open,
+                    "ended": registry and not is_open,
                 }
         return found
 

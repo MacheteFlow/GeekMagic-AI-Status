@@ -47,9 +47,10 @@ DEFAULTS: dict = {
     # Detect AI applications that publish no events (desktop clients, local
     # model runners) from their process and the files they touch while working.
     "detect_apps": True,
-    # An application quiet for longer than this stops holding the screen, which
-    # is what lets the weather station come back while it stays open.
-    "app_active_seconds": 120.0,
+    # How long an application stays on screen after its last write, so a reply
+    # arriving in chunks does not flicker. Kept short: an app is only shown
+    # while it is demonstrably working, never merely because it is open.
+    "app_linger_seconds": 25.0,
     # Extra applications, same fields as the built-in rules in apps.py:
     # {"key", "provider", "model", "executables": [...], "activity": [...]}
     "extra_apps": [],

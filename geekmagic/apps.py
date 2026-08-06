@@ -9,13 +9,21 @@ file. For those, two things can still be observed from outside:
     is it doing something now?    -> the mtime of the files it writes while
                                      streaming a reply
 
-That is enough for WORKING and IDLE. It is not enough for WAITING, and it never
-will be: nothing outside the application knows that it asked you a question.
+That is enough for WORKING. It is not enough for WAITING, and it never will be:
+nothing outside the application knows that it asked you a question.
 
-An application that is merely running must not keep the screen lit, or a chat
-client left open in the background would mean the weather station never comes
-back. So an app only counts while its activity is recent; once it goes quiet it
-drops out entirely and the screen is released.
+Two things must not hold the screen, and both took measuring to get right.
+
+An application that is merely running is one: a chat client left open in the
+background would otherwise mean the weather station never comes back.
+
+A single file write is the other, and it is the subtler one. These apps touch
+their store occasionally on their own -- a sync, a notification -- and treating
+one write as activity showed an AI status for minutes while the user was just
+browsing. Streaming a reply writes repeatedly over several seconds, so activity
+is only believed when the file changes *more than once* inside a short window.
+Measured on a real installation: an idle app produced zero writes in eighty
+seconds, while a reply produced a steady burst.
 
 The registry below is a starting point, not a closed list. Add your own through
 `extra_apps` in config.json, using the same fields.
@@ -55,8 +63,12 @@ class AppRule:
     # a real exchange. Verify a candidate path by watching its mtime while the
     # app sits idle: it should age steadily and never jump back.
     activity: list[str] = field(default_factory=list)
-    # Touched more recently than this -> working.
-    working_window: float = 10.0
+    # How long a burst of writes is collected over, and how many distinct
+    # changes must land inside it before the app counts as working. Two is the
+    # point: it rules out the lone background write that fooled the earlier
+    # version, while any real reply produces many.
+    burst_window: float = 25.0
+    min_changes: int = 2
 
 
 BUILTIN_APPS: list[AppRule] = [
@@ -210,11 +222,36 @@ def running_processes(wanted: set[str]) -> dict[str, list[str]]:
 
 class AppDetector:
     def __init__(self, rules: list[AppRule] | None = None,
-                 active_window: float = 120.0):
+                 linger: float = 25.0):
         self.rules = rules if rules is not None else list(BUILTIN_APPS)
-        # An app that has been quiet longer than this is dropped, which is what
-        # lets the screen go back to the weather.
-        self.active_window = active_window
+        # How long an app stays on screen after its last write, so the display
+        # does not flicker between the chunks of a single reply. Once this
+        # elapses the app drops out and the screen is released.
+        self.linger = linger
+        # key -> mtimes seen recently, used to tell a burst from a lone write.
+        self._seen: dict[str, list[tuple[float, float]]] = {}
+
+    def _working_since(self, key: str, mtime: float, rule: AppRule,
+                       now: float) -> float | None:
+        """When the app was last seen writing, if it counts as working.
+
+        Two conditions, and both are needed. Enough changes inside the burst
+        window, which rules out the lone background write. And a last change
+        that is itself recent, without which a finished reply would keep
+        asserting itself for the whole width of the window.
+        """
+        history = self._seen.setdefault(key, [])
+        if not history or history[-1][1] != mtime:
+            history.append((now, mtime))
+        cutoff = now - rule.burst_window
+        history[:] = [entry for entry in history if entry[0] >= cutoff]
+
+        if len(history) < rule.min_changes:
+            return None
+        last_change = history[-1][0]
+        if now - last_change > self.linger:
+            return None
+        return last_change
 
     @staticmethod
     def newest_activity(patterns: list[str]) -> float | None:
@@ -230,23 +267,28 @@ class AppDetector:
         return newest
 
     def poll(self) -> dict[str, dict]:
-        """Return the AI apps worth showing, keyed by "app:<rule key>"."""
+        """Return the AI apps that are actually working, keyed by "app:<key>".
+
+        Only working apps are returned. There is deliberately no idle state
+        here: an app we cannot prove is busy has no business holding the screen.
+        """
         wanted = {exe for rule in self.rules for exe in rule.executables}
         if not wanted:
             return {}
         processes = running_processes(wanted)
-        if not processes:
-            return {}
-
         now = time.time()
         found: dict[str, dict] = {}
+
         for rule in self.rules:
+            key = f"app:{rule.key}"
             paths = [p for exe in rule.executables for p in processes.get(exe, [])]
-            if not paths:
-                continue
-            if rule.path_contains and not any(
-                rule.path_contains.lower() in p.lower() for p in paths
-            ):
+            running = bool(paths) and (
+                not rule.path_contains
+                or any(rule.path_contains.lower() in p.lower() for p in paths)
+            )
+            if not running:
+                # Gone: forget its history so a restart starts from scratch.
+                self._seen.pop(key, None)
                 continue
 
             # With no activity files we can only say the app exists, which is
@@ -256,15 +298,15 @@ class AppDetector:
             newest = self.newest_activity(rule.activity)
             if newest is None:
                 continue
-            age = now - newest
-            if age > self.active_window:
+            since = self._working_since(key, newest, rule, now)
+            if since is None:
                 continue
 
-            found[f"app:{rule.key}"] = {
+            found[key] = {
                 "provider": rule.provider,
                 "model": rule.model,
-                "status": "working" if age <= rule.working_window else "idle",
-                "age": age,
+                "status": "working",
+                "age": now - since,
             }
         return found
 
@@ -291,11 +333,20 @@ def rules_from_config(entries) -> list[AppRule]:
 
 
 if __name__ == "__main__":
+    import sys
+
     detector = AppDetector()
     print("Known applications:", ", ".join(r.key for r in detector.rules))
-    results = detector.poll()
+    # One poll can never see a burst, since a burst is by definition more than
+    # one change over time. Sample for a while so the output means something.
+    rounds = int(sys.argv[1]) if len(sys.argv) > 1 else 8
+    print(f"Sampling for {rounds * 3}s...")
+    results: dict[str, dict] = {}
+    for _ in range(rounds):
+        results = detector.poll()
+        time.sleep(3)
     if not results:
-        print("  none active right now")
+        print("  nothing working right now")
     for key, info in sorted(results.items(), key=lambda kv: kv[1]["age"]):
         print(f"  {key:<22} {info['model']:<12} {info['status']:<8} "
-              f"{info['age']:.0f}s ago")
+              f"last write {info['age']:.0f}s ago")

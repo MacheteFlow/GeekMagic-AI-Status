@@ -81,9 +81,6 @@ class Controller:
         # Sessions inferred from transcripts, kept apart so hooks always win.
         self.watched: dict[str, Session] = {}
         self.last_watch = 0.0
-        # Sessions we have seen with a running process. Once one of these stops
-        # being open we know the editor was closed, rather than merely idle.
-        self.seen_open: set[str] = set()
         self.watcher = (
             TranscriptWatcher(
                 root=cfg.get("transcript_dir") or None,
@@ -103,7 +100,7 @@ class Controller:
         self.app_detector = (
             AppDetector(
                 rules=list(BUILTIN_APPS) + rules_from_config(cfg.get("extra_apps")),
-                active_window=cfg.get("app_active_seconds", 120.0),
+                linger=cfg.get("app_linger_seconds", 25.0),
             )
             if cfg.get("detect_apps", True) else None
         )
@@ -272,10 +269,6 @@ class Controller:
         except OSError as exc:
             log.warning("transcript scan failed: %s", exc)
             return
-        for key, info in found.items():
-            if info.get("open"):
-                self.seen_open.add(key)
-
         with self.lock:
             watched = {}
             for key, info in found.items():
@@ -286,7 +279,7 @@ class Controller:
                     usage=self._usage_for(key),
                     updated=now - info["age"], source="watch",
                     open=is_open,
-                    ended=key in self.seen_open and not is_open,
+                    ended=info.get("ended", False),
                 )
             self.watched = watched
 
@@ -301,7 +294,7 @@ class Controller:
                 # the watcher has stopped reporting is not open any more, and a
                 # stale True here would keep the screen lit forever.
                 session.open = sibling.open if sibling is not None else False
-                session.ended = key in self.seen_open and not session.open
+                session.ended = sibling.ended if sibling is not None else False
                 # Refreshed unconditionally, not just when missing: the figures
                 # climb while you work, and a hook only reports them once.
                 session.usage = self._usage_for(key) or session.usage
