@@ -1,0 +1,42 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One failing combination should not hide the others: a difference
+      # between platforms is usually the thing worth seeing.
+      fail-fast: false
+      matrix:
+        # Windows is not optional here. Deciding whether an app is open, and
+        # whether a session's process is still alive, is done through the Win32
+        # API, and that code would never run on Linux alone.
+        os: [ubuntu-latest, windows-latest]
+        # The oldest version the README promises, and a current one.
+        python: ["3.10", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install a monospace font
+        # Frames are rendered during the tests. Without a real monospace face
+        # Pillow falls back to a bitmap default, which still works but exercises
+        # a different path from the one anybody actually runs.
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-dejavu-core
+
+      - name: Install dependencies
+        run: python -m pip install --quiet -r requirements.txt
+
+      - name: Run tests
+        run: python run_tests.py -v

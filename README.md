@@ -1,5 +1,7 @@
 # GeekMagic AI Status
 
+[![tests](https://github.com/MacheteFlow/GeekMagic-AI-Status/actions/workflows/tests.yml/badge.svg)](https://github.com/MacheteFlow/GeekMagic-AI-Status/actions/workflows/tests.yml)
+
 Show which **AI model is working right now** on the screen of a GeekMagic
 SmallTV-Ultra, colour-coded by state, with usage bars for your rate-limit
 windows. When no AI is active the screen goes back to the stock weather station.
@@ -301,6 +303,28 @@ The official firmware repository is
 Note that the latest published release there is 9.0.50, while units ship with
 9.0.51 — a "restore" would be a downgrade. One more reason this project leaves
 the firmware alone.
+
+## Working on it
+
+```bash
+python run_tests.py          # everything
+python run_tests.py -v       # with each test's own output
+python tests/test_hysteresis.py
+```
+
+The tests are plain scripts, not a framework, and none of them touch a device:
+they drive the logic against stub devices, fake transcript directories and real
+throwaway processes. They run on every push and pull request, on Linux and
+Windows — Windows is not optional, since deciding whether an app is open and
+whether a session is still alive goes through the Win32 API and would otherwise
+never be exercised.
+
+What they do **not** cover is the device itself: the HTTP conversation with real
+firmware, how a frame looks on the panel, or whether it animates a GIF. Those
+need the hardware in front of you.
+
+Each one opens with why it exists. Most were written after a real failure, and
+the comment says which — that is more useful than a name like `test_edge_case_3`.
 
 ## Disclaimer
 
