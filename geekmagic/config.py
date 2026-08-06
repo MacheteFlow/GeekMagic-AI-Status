@@ -59,6 +59,9 @@ DEFAULTS: dict = {
     "read_account_usage": True,
     "usage_file": None,
     "sessions_dir": None,
+    # Where /model records the current choice. Read because the transcript only
+    # names a model once a reply from it exists, which is too late.
+    "claude_settings": None,
     # Detect AI applications that publish no events (desktop clients, local
     # model runners) from their process and the files they touch while working.
     "detect_apps": True,

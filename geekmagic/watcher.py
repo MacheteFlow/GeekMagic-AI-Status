@@ -30,6 +30,10 @@ from pathlib import Path
 
 DEFAULT_ROOT = Path.home() / ".claude" / "projects"
 DEFAULT_SESSIONS = Path.home() / ".claude" / "sessions"
+DEFAULT_SETTINGS = Path.home() / ".claude" / "settings.json"
+
+# What /model writes when given a short name, and what a full id looks like.
+MODEL_ALIASES = ("opus", "sonnet", "haiku", "fable")
 
 
 def pid_alive(pid: int) -> bool:
@@ -72,9 +76,11 @@ class TranscriptWatcher:
         provider: str = "anthropic",
         sessions_dir: Path | str | None = None,
         idle_after: float = 50.0,
+        settings_path: Path | str | None = None,
     ):
         self.root = Path(root) if root else DEFAULT_ROOT
         self.sessions_dir = Path(sessions_dir) if sessions_dir else DEFAULT_SESSIONS
+        self.settings_path = Path(settings_path) if settings_path else DEFAULT_SETTINGS
         # A transcript touched more recently than this means "still busy".
         self.working_window = working_window
         # ...and only silence lasting this long means "finished".
@@ -89,8 +95,10 @@ class TranscriptWatcher:
         # Older than this, a session with no running process is forgotten.
         self.active_window = active_window
         self.provider = provider
-        # path -> (mtime seen, model found) so the tail is re-read only on change
-        self._model_cache: dict[str, tuple[float, str]] = {}
+        # path -> (mtime seen, models found) so the tail is re-read only on change
+        self._model_cache: dict[str, tuple[float, list[str]]] = {}
+        # (mtime, value) of the model recorded in settings.json
+        self._settings_cache: tuple[float, str] | None = None
         # session id -> last status reported, held on to between the thresholds
         self._status: dict[str, str] = {}
 
@@ -126,8 +134,8 @@ class TranscriptWatcher:
         return alive
 
     @staticmethod
-    def _model_from_tail(path: Path) -> str:
-        """Read the model from the last assistant message, tail only."""
+    def _models_from_tail(path: Path) -> list[str]:
+        """Models named in the tail of the transcript, most recent first."""
         try:
             with open(path, "rb") as fh:
                 fh.seek(0, os.SEEK_END)
@@ -135,7 +143,8 @@ class TranscriptWatcher:
                 fh.seek(max(0, size - 200_000))
                 tail = fh.read().decode("utf-8", "replace")
         except OSError:
-            return ""
+            return []
+        seen: list[str] = []
         for line in reversed(tail.splitlines()):
             line = line.strip()
             if not line.startswith("{"):
@@ -147,18 +156,62 @@ class TranscriptWatcher:
             model = (entry.get("message") or {}).get("model")
             # Entries Claude Code generates itself are tagged with placeholders
             # like "<synthetic>": that is not a model anyone wants on screen.
-            if model and not str(model).startswith("<"):
-                return str(model)
-        return ""
+            if model and not str(model).startswith("<") and model not in seen:
+                seen.append(str(model))
+        return seen
 
-    def _model_for(self, path: Path, mtime: float) -> str:
+    def _models_for(self, path: Path, mtime: float) -> list[str]:
         key = str(path)
         cached = self._model_cache.get(key)
         if cached and cached[0] == mtime:
             return cached[1]
-        model = self._model_from_tail(path)
-        self._model_cache[key] = (mtime, model)
-        return model
+        models = self._models_from_tail(path)
+        self._model_cache[key] = (mtime, models)
+        return models
+
+    def selected_model(self) -> tuple[str, float] | None:
+        """What /model last set, and when, or None if it cannot be read.
+
+        The transcript only names a model once a reply written by it exists, so
+        after switching it keeps naming the previous one until the assistant
+        answers -- measured at forty seconds on a real session. Claude Code
+        writes the new choice to settings.json the instant you make it, which is
+        the only source that knows straight away.
+        """
+        try:
+            mtime = self.settings_path.stat().st_mtime
+        except OSError:
+            return None
+        if self._settings_cache and self._settings_cache[0] == mtime:
+            return self._settings_cache[1], mtime
+        try:
+            with open(self.settings_path, encoding="utf-8") as fh:
+                value = json.load(fh).get("model")
+        except (OSError, json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(value, str) or not value.strip():
+            return None
+        # Trim decorations such as the "[1m]" context-window marker.
+        cleaned = value.split("[")[0].strip()
+        self._settings_cache = (mtime, cleaned)
+        return cleaned, mtime
+
+    @staticmethod
+    def _resolve(selected: str, seen: list[str]) -> str:
+        """Turn a short name like "opus" into the full id shown on screen.
+
+        /model accepts both, and the screen has always shown full ids. Matching
+        against the names this session has actually used keeps them consistent;
+        with nothing to match, the short name is better than nothing.
+        """
+        if selected.startswith("claude-"):
+            return selected
+        lowered = selected.lower()
+        if lowered in MODEL_ALIASES:
+            for candidate in seen:
+                if lowered in candidate.lower():
+                    return candidate
+        return selected
 
     # ------------------------------------------------------------ public API
 
@@ -203,9 +256,16 @@ class TranscriptWatcher:
             if not is_open and age > self.active_window:
                 continue
 
-            model = self._model_for(path, mtime)
+            seen = self._models_for(path, mtime)
+            model = seen[0] if seen else ""
             if not model:
                 continue  # no assistant reply yet: nothing worth showing
+
+            # A choice made after the last reply was written has not reached the
+            # transcript yet, and is the one the user is looking at.
+            selected = self.selected_model()
+            if selected and selected[1] > mtime:
+                model = self._resolve(selected[0], seen)
 
             status = self._status_for(session_id, age)
             # Several transcripts can move at once (subagents have their own).

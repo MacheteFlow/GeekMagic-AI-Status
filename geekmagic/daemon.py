@@ -89,6 +89,7 @@ class Controller:
                 idle_after=cfg.get("watch_idle_seconds", 50.0),
                 active_window=cfg.get("session_ttl_seconds", 3600),
                 sessions_dir=cfg.get("sessions_dir") or None,
+                settings_path=cfg.get("claude_settings") or None,
             )
             if cfg.get("watch_transcripts", True) else None
         )
@@ -120,6 +121,9 @@ class Controller:
         # Consecutive device failures, and when it is worth trying again.
         self.failures = 0
         self.retry_at = 0.0
+        # (provider, model, status) -> the last frame shown for it, so a change
+        # of state can put the right colour up before the exact frame exists.
+        self.frame_for_state: dict[tuple[str, str, str], str] = {}
 
         self.state_file = Path(cfg["state_file"])
         saved = self._load_state()
@@ -426,12 +430,36 @@ class Controller:
         self.pending_stock = None
         self._restore_stock()
 
+    def _show_stand_in(self, state: tuple[str, str, str]) -> None:
+        """Put the right colour up now, while the exact frame is uploading.
+
+        Uploading takes two or three seconds on this hardware, and the frame for
+        a state is only cached until a usage figure moves -- with the bars
+        showing whole percentage points, that is often. So a change of state
+        waited on an upload, and the screen lagged behind by exactly that.
+
+        Any earlier frame for the same provider, model and state carries the
+        same word and the same colour; only the bars are a little behind. Better
+        the correct state instantly with stale bars than the truth three seconds
+        late.
+        """
+        stand_in = self.frame_for_state.get(state)
+        if not stand_in or stand_in == self.shown_frame:
+            return
+        try:
+            self.dev.show_image(stand_in)
+        except DeviceError:
+            return          # the real push is about to be attempted anyway
+        self.shown_frame = stand_in
+        log.info("screen -> %s %s [%s] (bars catching up)", *state)
+
     def _ensure_frame(self, provider: str, model: str, status: str,
                       usage: dict | None = None) -> str:
         """Return the device path of the frame for this state, uploading if needed."""
         name = frame_key(provider, model, status, usage)
         path = f"{IMAGE_DIR}/{name}"
         if name not in self.known_frames:
+            self._show_stand_in((provider, model, status))
             # An animated status comes back as a looping GIF, which the device
             # plays by itself; everything else is a still JPEG.
             blob = render_bytes(
@@ -447,6 +475,9 @@ class Controller:
             self._save_known()
         else:
             self.known_frames[name] = time.time()
+        # Remembered so the next change of this state has something to show
+        # immediately, instead of waiting on an upload.
+        self.frame_for_state[(provider, model, status)] = path
         return path
 
     def _gc_frames(self) -> None:
