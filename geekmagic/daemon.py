@@ -24,6 +24,7 @@ from pathlib import Path
 
 from .device import THEME_PHOTO_ALBUM, DeviceError, SmallTVUltra
 from .render import frame_key, render_jpeg
+from .usage import AccountUsage
 from .watcher import TranscriptWatcher
 
 log = logging.getLogger("geekmagic")
@@ -78,6 +79,10 @@ class Controller:
                 active_window=cfg.get("session_ttl_seconds", 3600),
             )
             if cfg.get("watch_transcripts", True) else None
+        )
+        self.account_usage = (
+            AccountUsage(cfg.get("usage_file") or None)
+            if cfg.get("read_account_usage", True) else None
         )
         self.lock = threading.Lock()
         self.wake = threading.Event()
@@ -216,7 +221,7 @@ class Controller:
                 watched[key] = Session(
                     provider=info["provider"], model=info["model"],
                     status=info["status"],
-                    usage=self._usage_from_cache(key),
+                    usage=self._usage_for(key),
                     updated=now - info["age"], source="watch",
                     open=info.get("open", False),
                 )
@@ -231,17 +236,23 @@ class Controller:
                 sibling = watched.get(key)
                 if sibling is not None:
                     session.open = sibling.open
-                if not session.usage:
-                    session.usage = self._usage_from_cache(key)
+                # Refreshed unconditionally, not just when missing: the figures
+                # climb while you work, and a hook only reports them once.
+                session.usage = self._usage_for(key) or session.usage
 
-    def _usage_from_cache(self, session_id: str) -> dict:
-        """Read the usage percentages the status line wrote for this session.
+    def _usage_for(self, session_id: str) -> dict:
+        """Current usage percentages, from the freshest source available.
 
-        The status line is the only place Claude Code publishes rate_limits, and
-        it does not go through the hooks, so a watcher-driven session picks the
-        figures up from its cache file instead. Missing file simply means no
-        bars, which is the correct outcome: better nothing than a stale number.
+        The account-wide figures Claude Code keeps in ~/.claude.json are
+        preferred: they are refreshed as it works and need neither hooks nor a
+        restarted status line. The per-session cache written by the status line
+        is the fallback. If neither has anything, no bars get drawn, which beats
+        drawing a stale number.
         """
+        if self.account_usage is not None:
+            account = self.account_usage.read()
+            if account:
+                return account
         path = self.state_file.parent / f"session-{session_id}.json"
         try:
             data = json.loads(path.read_text("utf-8"))

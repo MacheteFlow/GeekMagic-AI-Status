@@ -160,12 +160,17 @@ python gmctl.py gc                      # remove ai_*.jpg frames from the device
 
 ### About the usage bars
 
-They come from `rate_limits` in the status line payload, which Claude Code only
-provides on Claude.ai Pro/Max plans and only after the first response of a
-session. That is the **only** local source — the figures are not in the
-transcripts nor in any session file, so a freshly installed status line needs
-Claude Code restarted once before the bars can appear. Until then the frame
-simply leaves them out, rather than showing a number that might be wrong.
+They are read from `cachedUsageUtilization` in `~/.claude.json`, which Claude
+Code refreshes as it works. That source needs no hooks, no status line and no
+restart, so the bars are live from the moment the daemon starts. Only the usage
+block is read; the account identifiers alongside it are ignored.
+
+The status line remains a fallback for setups where that file is missing. It
+supplies the same figures through `rate_limits`, but only on Claude.ai Pro/Max
+plans and only from a session started after it was configured.
+
+If neither source has anything, the bars are simply left off the frame rather
+than drawn from a stale number.
 
 ## Backup and restore
 

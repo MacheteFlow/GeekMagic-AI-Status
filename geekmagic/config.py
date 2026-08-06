@@ -39,6 +39,10 @@ DEFAULTS: dict = {
     # so anything a hook reported recently overrides what the watcher inferred.
     "watch_transcripts": True,
     "transcript_dir": None,
+    # Read the usage windows Claude Code caches in ~/.claude.json. This is the
+    # live source for the bars: no hooks, no status line, no restart needed.
+    "read_account_usage": True,
+    "usage_file": None,
     "watch_interval": 2.0,
     # A transcript touched more recently than this counts as still working.
     "watch_working_seconds": 12.0,
