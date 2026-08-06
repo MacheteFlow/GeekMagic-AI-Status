@@ -5,20 +5,25 @@ SmallTV-Ultra, colour-coded by state, with usage bars for your rate-limit
 windows. When no AI is active the screen goes back to the stock weather station.
 
 <p align="center">
-  <img src="docs/working.png" width="200" alt="WORKING: orange screen showing claude-opus-5">
-  <img src="docs/waiting.png" width="200" alt="WAITING: red screen showing claude-opus-5">
-  <img src="docs/idle.png" width="200" alt="IDLE: green screen showing claude-sonnet-4-5">
+  <img src="docs/working.gif" width="200" alt="WORKING: orange screen with a spinning slash">
+  <img src="docs/waiting.png" width="200" alt="WAITING: red screen with a question mark">
+  <img src="docs/idle.png" width="200" alt="IDLE: green screen with a tick">
 </p>
 
-| State | Colour | When |
-|---|---|---|
-| `WORKING` | orange | the assistant is thinking |
-| `WAITING` | red | it asked you something and is waiting for your answer |
-| `IDLE` | green | session open but nothing happening |
-| — | stock weather station | no session active |
+| State | Colour | Mark | When |
+|---|---|---|---|
+| `WORKING` | orange | spinner `/ - \ \|` | the assistant is thinking |
+| `WAITING` | red | `?` | it asked you something and is waiting for your answer |
+| `IDLE` | green | `✓` | session open but nothing happening |
+| — | stock weather station | — | no session active |
 
-The bars at the bottom show how much of your 5-hour and weekly usage windows
-you have spent. They only appear when that information is available.
+The bars show how much of your 5-hour and weekly usage windows you have spent,
+to the percentage point. They only appear when that information is available.
+
+`WORKING` is an animated GIF, which the device loops by itself, so a spinner
+that turns for an hour still costs a single upload. The tick is drawn with
+lines rather than typed, because U+2713 is absent from the monospace fonts this
+targets and would come out as an empty box.
 
 ## The original firmware is never touched
 
@@ -70,14 +75,20 @@ restart at all. The watcher can tell `WORKING` from `IDLE`, but not `WAITING` �
 from the outside, a session asking you a question looks exactly like an idle
 one. Hooks fill that in when they are available, and always take precedence.
 
-**Each frame is uploaded only once.** The filename is a hash of everything
-visible on it (provider, model, state, bars); if that frame is already on the
-device, only `/set?img=` is called. In steady state the flash is never rewritten
-— which matters a lot on an ESP8266, where erase cycles are finite.
+**A frame is uploaded once and then reused.** The filename is a hash of
+everything visible on it (provider, model, state, bars); if that frame is
+already on the device, only `/set?img=` is called. That matters on an ESP8266,
+where flash erase cycles are finite.
 
-For the same reason usage percentages are **rounded down to 5% steps**. Without
-that, every single percentage point would generate a new frame and we would be
-rewriting flash constantly.
+Showing the usage bars to the percentage point works against that: every point
+of movement is a new frame to upload. It is a deliberate trade — exact numbers
+in exchange for a handful of uploads an hour rather than almost none — and
+`max_cached_frames` keeps the pile on the device bounded. Set `USAGE_BUCKET` in
+`render.py` higher to round the figures and cut the writes.
+
+The spinner does **not** work this way. It is a looping GIF the device animates
+by itself; pushing a frame every tenth of a second to animate it would mean
+tens of thousands of flash writes an hour.
 
 ## Requirements
 
@@ -206,7 +217,7 @@ python gmctl.py gc                      # remove ai_*.jpg frames from the device
 | `min_push_interval` | `0.6` | minimum seconds between two screen changes |
 | `max_cached_frames` | `60` | frames kept on the device before the oldest are dropped |
 | `font_path` | `""` | monospace font; empty = first one found on the system |
-| `jpeg_quality` | `88` | frame quality |
+| `jpeg_quality` | `88` | quality of the still frames |
 | `watch_transcripts` | `true` | detect sessions from transcripts, without a restart |
 | `watch_working_seconds` | `12` | transcript idle time after which a session counts as idle |
 

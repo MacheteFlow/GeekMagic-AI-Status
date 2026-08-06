@@ -12,6 +12,10 @@ backup/
 # Anteprime generate durante le prove
 prev_*.png
 preview*.png
+preview/
+
+# Punti di ripristino locali, con l'istantanea del proprio dispositivo
+rollback/
 
 # Log del daemon: contengono l'indirizzo del dispositivo sulla rete locale
 *.log

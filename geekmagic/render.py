@@ -26,11 +26,33 @@ from PIL import Image, ImageDraw, ImageFont
 
 SIZE = 240
 
-# Bumping this invalidates every frame already uploaded to the device.
-RENDER_VERSION = 4
+# Bumping this invalidates every frame already uploaded to the device. Needed
+# whenever the artwork changes without the data behind it changing, since the
+# filename is derived from the data alone.
+RENDER_VERSION = 7
 
-# Rounding step for the usage percentages, in points.
-USAGE_BUCKET = 5
+# Rounding step for the usage percentages, in points. At 1 the bars show the
+# real figure. See the note in frame_key about what that costs.
+USAGE_BUCKET = 1
+
+# The mark drawn beside the status word.
+#
+# "check" is drawn with lines rather than typed, because the obvious character
+# for it (U+2713) is not in Consolas and would come out as an empty box. The
+# rest are plain ASCII, present in every monospace font.
+#
+# working cycles through the four, which is what makes the spinner: the frames
+# become an animated GIF, so the device loops it by itself and nothing is
+# rewritten while it spins.
+STATUS_GLYPHS: dict[str, tuple[str, ...]] = {
+    "idle": ("check",),
+    "waiting": ("?",),
+    "working": ("/", "-", "\\", "|"),
+    "error": ("×",),
+}
+
+# Milliseconds per spinner frame.
+SPINNER_MS = 130
 
 
 @dataclass(frozen=True)
@@ -84,6 +106,18 @@ def _font(size: int, override: str | None = None):
 def _text_size(draw: ImageDraw.ImageDraw, text: str, font) -> tuple[int, int]:
     left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
     return right - left, bottom - top
+
+
+def _cap_box(draw: ImageDraw.ImageDraw, font) -> tuple[int, int]:
+    """Where a capital letter actually sits, as (offset from the draw origin,
+    height).
+
+    PIL places text by the top of its line box, not by the top of the letters,
+    so anything drawn by hand next to a word has to account for that gap or it
+    ends up sitting lower than the text it belongs to.
+    """
+    _, top, _, bottom = draw.textbbox((0, 0), "M", font=font)
+    return top, bottom - top
 
 
 def _wrap(text: str, max_chars: int) -> list[str]:
@@ -190,6 +224,24 @@ def _draw_bar(draw, y: int, label: str, pct: int, style: Style, font_override) -
         )
 
 
+def _draw_check(draw, x: int, y: int, height: int, colour, weight: int) -> None:
+    """A tick drawn to match the surrounding text rather than typed.
+
+    Sized from the cap height of the status word and stroked at the same weight,
+    so it reads as part of the same lettering even though no glyph exists for it.
+    """
+    # Inset from the cap box so the stroke's own thickness does not spill past
+    # the letters it sits next to.
+    draw.line(
+        [
+            (x, y + height * 0.52),
+            (x + height * 0.38, y + height * 0.90),
+            (x + height * 0.90, y + height * 0.10),
+        ],
+        fill=colour, width=weight, joint="curve",
+    )
+
+
 def _usage_buckets(usage: dict | None) -> dict[str, int]:
     """Pull out the already-rounded percentages, skipping absent windows."""
     out: dict[str, int] = {}
@@ -212,6 +264,35 @@ def render(
     status: str,
     usage: dict | None = None,
     font_override: str | None = None,
+) -> Image.Image:
+    """A single still image: the first frame of the sequence."""
+    return render_frames(provider, model, status, usage, font_override)[0]
+
+
+def render_frames(
+    provider: str,
+    model: str,
+    status: str,
+    usage: dict | None = None,
+    font_override: str | None = None,
+) -> list[Image.Image]:
+    """One image per glyph position: a single frame, or four for the spinner."""
+    glyphs = STATUS_GLYPHS.get(status.lower(), ())
+    if not glyphs:
+        return [_render_one(provider, model, status, usage, font_override, None)]
+    return [
+        _render_one(provider, model, status, usage, font_override, glyph)
+        for glyph in glyphs
+    ]
+
+
+def _render_one(
+    provider: str,
+    model: str,
+    status: str,
+    usage: dict | None,
+    font_override: str | None,
+    glyph: str | None,
 ) -> Image.Image:
     style = STYLES.get(status.lower(), DEFAULT_STYLE)
     img = Image.new("RGB", (SIZE, SIZE), style.bg)
@@ -242,17 +323,34 @@ def render(
             y += p_lh
         top_used = y
 
-    # --- status, just above the bars
+    # --- status, just above the bars, with its mark beside it
+    #
+    # The mark is laid out as a fixed-width slot whether or not this frame has
+    # one, so the word does not shift as the spinner turns.
     s_lines, s_font, s_lh = _fit_block(
         draw, status.upper(), inner_w, 32, range(14, 25), font_override
     )
+    char_w, _ = _text_size(draw, "M", s_font)
+    cap_top, cap_h = _cap_box(draw, s_font)
+    slot = char_w * 2 if glyph else 0     # one space plus one character
     s_h = s_lh * len(s_lines)
     gap = 12 if bar_rows else 20
     y = bars_top - gap - s_h
     status_top = y
-    for line in s_lines:
+    for index, line in enumerate(s_lines):
         w, _ = _text_size(draw, line, s_font)
-        draw.text(((SIZE - w) // 2, y), line, font=s_font, fill=style.fg)
+        left = (SIZE - w - slot) // 2
+        draw.text((left, y), line, font=s_font, fill=style.fg)
+        # Only the last line carries the mark, so a wrapped word keeps it at the end.
+        if glyph and index == len(s_lines) - 1:
+            gx = left + w + char_w
+            if glyph == "check":
+                # Aligned to the cap box of the word beside it, so it sits on
+                # the same baseline instead of hanging below.
+                weight = max(2, round(cap_h / 6))
+                _draw_check(draw, gx, y + cap_top, cap_h, style.fg, weight)
+            else:
+                draw.text((gx, y), glyph, font=s_font, fill=style.fg)
         y += s_lh
 
     # --- model, centred in whatever space is left
@@ -269,6 +367,10 @@ def render(
     return img
 
 
+def is_animated(status: str) -> bool:
+    return len(STATUS_GLYPHS.get(status.lower(), ())) > 1
+
+
 def render_jpeg(provider, model, status, usage=None, font_override=None,
                 quality: int = 88) -> bytes:
     buf = io.BytesIO()
@@ -278,10 +380,43 @@ def render_jpeg(provider, model, status, usage=None, font_override=None,
     return buf.getvalue()
 
 
+def render_gif(provider, model, status, usage=None, font_override=None) -> bytes:
+    """An animated GIF of the whole sequence, looping forever.
+
+    The device plays GIFs on its own, so the spinner costs exactly one upload
+    however long it turns. Driving the animation by pushing a frame every tenth
+    of a second would write to the flash thousands of times an hour.
+    """
+    frames = render_frames(provider, model, status, usage, font_override)
+    # A flat palette keeps this small: the artwork is a handful of solid colours.
+    converted = [f.convert("P", palette=Image.ADAPTIVE, colors=32) for f in frames]
+    buf = io.BytesIO()
+    converted[0].save(
+        buf, format="GIF", save_all=True, append_images=converted[1:],
+        duration=SPINNER_MS, loop=0, optimize=True, disposal=1,
+    )
+    return buf.getvalue()
+
+
+def render_bytes(provider, model, status, usage=None, font_override=None,
+                 quality: int = 88) -> bytes:
+    """Whatever this status needs: an animated GIF, or a still JPEG."""
+    if is_animated(status):
+        return render_gif(provider, model, status, usage, font_override)
+    return render_jpeg(provider, model, status, usage, font_override, quality)
+
+
 def frame_key(provider: str, model: str, status: str, usage: dict | None = None) -> str:
-    """Deterministic filename: same contents, same file, so no rewrites."""
+    """Deterministic filename: same contents, same file, so no rewrites.
+
+    With USAGE_BUCKET at 1 the bars carry the real figure, which means a new
+    file each time a percentage moves. That is the trade the exact numbers cost:
+    a handful of uploads an hour instead of almost none. max_cached_frames keeps
+    the pile on the device bounded.
+    """
     bars = _usage_buckets(usage)
     parts = [str(RENDER_VERSION), provider, model, status]
     parts += [f"{k}{v}" for k, v in sorted(bars.items())]
     raw = "|".join(parts).lower()
-    return "ai_" + hashlib.sha1(raw.encode()).hexdigest()[:10] + ".jpg"
+    suffix = ".gif" if is_animated(status) else ".jpg"
+    return "ai_" + hashlib.sha1(raw.encode()).hexdigest()[:10] + suffix

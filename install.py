@@ -312,17 +312,17 @@ def step_test(host: str) -> None:
         return
 
     from geekmagic.device import DeviceError, SmallTVUltra
-    from geekmagic.render import frame_key, render_jpeg
+    from geekmagic.render import frame_key, render_bytes
 
-    dev = SmallTVUltra(host, timeout=15.0, retries=4)
+    dev = SmallTVUltra(host, timeout=20.0, retries=4)
     try:
         theme_before = dev.get_theme()
         album = dev.get_album()
         usage = {"five_hour": {"used_percentage": 40}}
         name = frame_key("anthropic", "install-test", "working", usage)
-        jpeg = render_jpeg("anthropic", "install-test", "working", usage)
+        blob = render_bytes("anthropic", "install-test", "working", usage)
         if name not in {f["name"] for f in dev.list_files("/image")}:
-            dev.upload("/image", name, jpeg)
+            dev.upload("/image", name, blob)
         dev.set_autoplay(False, int(album.get("i_i", 10)))
         dev.set_theme(3)
         dev.show_image(f"/image/{name}")
@@ -331,7 +331,7 @@ def step_test(host: str) -> None:
         return
 
     print()
-    seen = ask("Do you see an orange screen with a progress bar on the device?")
+    seen = ask("Do you see an orange screen with a spinning mark and a bar?")
     time.sleep(1)
     try:
         dev.delete(f"/image/{name}")

@@ -24,7 +24,7 @@ from pathlib import Path
 
 from .apps import BUILTIN_APPS, AppDetector, rules_from_config
 from .device import THEME_PHOTO_ALBUM, DeviceError, SmallTVUltra
-from .render import frame_key, render_jpeg
+from .render import frame_key, render_bytes
 from .usage import AccountUsage
 from .watcher import TranscriptWatcher
 
@@ -399,14 +399,16 @@ class Controller:
         name = frame_key(provider, model, status, usage)
         path = f"{IMAGE_DIR}/{name}"
         if name not in self.known_frames:
-            jpeg = render_jpeg(
+            # An animated status comes back as a looping GIF, which the device
+            # plays by itself; everything else is a still JPEG.
+            blob = render_bytes(
                 provider, model, status, usage,
                 self.cfg.get("font_path") or None,
                 quality=self.cfg.get("jpeg_quality", 88),
             )
             log.info("uploading frame %s (%d B) %s/%s/%s",
-                     name, len(jpeg), provider, model, status)
-            self.dev.upload(IMAGE_DIR, name, jpeg)
+                     name, len(blob), provider, model, status)
+            self.dev.upload(IMAGE_DIR, name, blob)
             self.known_frames[name] = time.time()
             self._gc_frames()
             self._save_known()

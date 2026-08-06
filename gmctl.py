@@ -16,9 +16,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from PIL import Image  # noqa: E402
+
 from geekmagic import config  # noqa: E402
 from geekmagic.device import DeviceError, SmallTVUltra  # noqa: E402
-from geekmagic.render import frame_key, render, render_jpeg  # noqa: E402
+from geekmagic.render import (  # noqa: E402
+    frame_key, is_animated, render, render_bytes, render_frames,
+)
 
 
 def daemon_post(cfg: dict, path: str, payload: dict) -> None:
@@ -62,23 +66,38 @@ def cmd_preview(cfg, args):
     out = Path(args.out)
     usage = usage_from_args(args)
     font = cfg.get("font_path") or None
-    render(args.provider, args.model, args.status, usage, font).save(out)
-    jpeg = render_jpeg(args.provider, args.model, args.status, usage, font)
-    print(f"preview written to {out}  ({len(jpeg)} B as JPEG)")
-    print(f"name on the device: {frame_key(args.provider, args.model, args.status, usage)}")
+    name = frame_key(args.provider, args.model, args.status, usage)
+    blob = render_bytes(args.provider, args.model, args.status, usage, font)
+
+    if is_animated(args.status):
+        # Write the real animation, and the frames side by side to inspect.
+        gif_path = out.with_suffix(".gif")
+        gif_path.write_bytes(blob)
+        frames = render_frames(args.provider, args.model, args.status, usage, font)
+        width = frames[0].width
+        sheet = Image.new("RGB", (width * len(frames), frames[0].height))
+        for i, frame in enumerate(frames):
+            sheet.paste(frame, (i * width, 0))
+        sheet.save(out)
+        print(f"animation written to {gif_path}  ({len(blob)} B, {len(frames)} frames)")
+        print(f"frames side by side in {out}")
+    else:
+        render(args.provider, args.model, args.status, usage, font).save(out)
+        print(f"preview written to {out}  ({len(blob)} B)")
+    print(f"name on the device: {name}")
 
 
 def cmd_show(cfg, args):
     """Bypass the daemon and write straight to the device."""
-    dev = SmallTVUltra(cfg["device_host"])
+    dev = SmallTVUltra(cfg["device_host"], timeout=20.0, retries=4)
     usage = usage_from_args(args)
     font = cfg.get("font_path") or None
     name = frame_key(args.provider, args.model, args.status, usage)
-    jpeg = render_jpeg(args.provider, args.model, args.status, usage, font)
+    blob = render_bytes(args.provider, args.model, args.status, usage, font)
     existing = {f["name"] for f in dev.list_files("/image")}
     if name not in existing:
-        print(f"uploading {name} ({len(jpeg)} B) ...")
-        dev.upload("/image", name, jpeg)
+        print(f"uploading {name} ({len(blob)} B) ...")
+        dev.upload("/image", name, blob)
     dev.set_autoplay(False)
     dev.set_theme(3)
     dev.show_image(f"/image/{name}")
