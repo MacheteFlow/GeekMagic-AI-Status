@@ -12,18 +12,21 @@ file. For those, two things can still be observed from outside:
 That is enough for WORKING. It is not enough for WAITING, and it never will be:
 nothing outside the application knows that it asked you a question.
 
-Two things must not hold the screen, and both took measuring to get right.
+Two details took measuring to get right.
 
-An application that is merely running is one: a chat client left open in the
-background would otherwise mean the weather station never comes back.
+"Running" is not the same as "open". These apps keep running after you close
+their window to the notification area, so a process check alone would mean the
+weather station never comes back. An app therefore counts as open only while it
+owns a visible window; one minimised to the taskbar still does, one hidden in
+the tray does not.
 
-A single file write is the other, and it is the subtler one. These apps touch
-their store occasionally on their own -- a sync, a notification -- and treating
-one write as activity showed an AI status for minutes while the user was just
-browsing. Streaming a reply writes repeatedly over several seconds, so activity
-is only believed when the file changes *more than once* inside a short window.
-Measured on a real installation: an idle app produced zero writes in eighty
-seconds, while a reply produced a steady burst.
+Telling working from idle is the other. These apps touch their store
+occasionally on their own -- a sync, a notification -- and treating one write as
+activity reported a busy assistant for minutes on end. Streaming a reply writes
+repeatedly over several seconds, so work is only believed when the file changes
+*more than once* inside a short window. Measured on a real installation: an idle
+app produced zero writes in eighty seconds, while a reply produced a steady
+burst.
 
 The registry below is a starting point, not a closed list. Add your own through
 `extra_apps` in config.json, using the same fields.
@@ -63,10 +66,14 @@ class AppRule:
     # a real exchange. Verify a candidate path by watching its mtime while the
     # app sits idle: it should age steadily and never jump back.
     activity: list[str] = field(default_factory=list)
-    # How long a burst of writes is collected over, and how many distinct
-    # changes must land inside it before the app counts as working. Two is the
-    # point: it rules out the lone background write that fooled the earlier
-    # version, while any real reply produces many.
+    # How long a burst of writes is collected over, and how many changes must
+    # land inside it before the app counts as working.
+    #
+    # A change means the file differing from the previous reading, so the first
+    # reading is only a baseline and never counts by itself -- otherwise the
+    # very first write after startup would look like activity. Two is the point:
+    # it rules out the lone background write that fooled an earlier version,
+    # while any real reply produces many.
     burst_window: float = 25.0
     min_changes: int = 2
 
@@ -123,8 +130,8 @@ BUILTIN_APPS: list[AppRule] = [
 # ---------------------------------------------------------------- processes
 
 
-def _running_windows(wanted: set[str]) -> dict[str, list[str]]:
-    """Basename -> full paths, for the executables we care about.
+def _running_windows(wanted: set[str]) -> dict[str, list[tuple[int, str]]]:
+    """Basename -> [(pid, full path)], for the executables we care about.
 
     Enumerated with Toolhelp32, which hands back names cheaply; the full path is
     resolved only for the few processes whose name already matched, since that
@@ -151,7 +158,7 @@ def _running_windows(wanted: set[str]) -> dict[str, list[str]]:
     if snapshot == -1:
         return {}
 
-    found: dict[str, list[str]] = {}
+    found: dict[str, list[tuple[int, str]]] = {}
     entry = PROCESSENTRY32()
     entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
     try:
@@ -172,7 +179,7 @@ def _running_windows(wanted: set[str]) -> dict[str, list[str]]:
                             path = buf.value
                     finally:
                         k32.CloseHandle(handle)
-                found.setdefault(name, []).append(path)
+                found.setdefault(name, []).append((entry.th32ProcessID, path))
             if not k32.Process32Next(snapshot, ctypes.byref(entry)):
                 break
     finally:
@@ -180,8 +187,8 @@ def _running_windows(wanted: set[str]) -> dict[str, list[str]]:
     return found
 
 
-def _running_posix(wanted: set[str]) -> dict[str, list[str]]:
-    found: dict[str, list[str]] = {}
+def _running_posix(wanted: set[str]) -> dict[str, list[tuple[int, str]]]:
+    found: dict[str, list[tuple[int, str]]] = {}
     proc = Path("/proc")
     if proc.is_dir():  # Linux
         for entry in proc.iterdir():
@@ -193,28 +200,66 @@ def _running_posix(wanted: set[str]) -> dict[str, list[str]]:
                 continue
             name = os.path.basename(path).lower()
             if name in wanted:
-                found.setdefault(name, []).append(path)
+                found.setdefault(name, []).append((int(entry.name), path))
         return found
     # macOS and the rest: ask ps once rather than poke at every process.
     import subprocess
     try:
         out = subprocess.run(
-            ["ps", "-A", "-o", "comm="], capture_output=True, text=True, timeout=5
+            ["ps", "-A", "-o", "pid=,comm="], capture_output=True, text=True, timeout=5
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return found
     for line in out.splitlines():
-        path = line.strip()
-        name = os.path.basename(path).lower()
-        if name in wanted:
-            found.setdefault(name, []).append(path)
+        pid_text, _, path = line.strip().partition(" ")
+        name = os.path.basename(path.strip()).lower()
+        if name in wanted and pid_text.isdigit():
+            found.setdefault(name, []).append((int(pid_text), path.strip()))
     return found
 
 
-def running_processes(wanted: set[str]) -> dict[str, list[str]]:
+def running_processes(wanted: set[str]) -> dict[str, list[tuple[int, str]]]:
     if os.name == "nt":
         return _running_windows(wanted)
     return _running_posix(wanted)
+
+
+def visible_window_pids() -> set[int] | None:
+    """Processes that own at least one visible top-level window.
+
+    This is what separates an app you have open from one you closed to the
+    notification area: a tray-only app owns no visible window, while a window
+    minimised to the taskbar still counts as visible to Windows.
+
+    Returns None where the question cannot be answered, so callers can fall
+    back to "running is enough" instead of concluding everything is hidden.
+    """
+    if os.name != "nt":
+        return None
+
+    import ctypes
+    import ctypes.wintypes as wt
+
+    user32 = ctypes.windll.user32
+    pids: set[int] = set()
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, wt.HWND, wt.LPARAM)
+    def callback(hwnd, _lparam):
+        if not user32.IsWindowVisible(hwnd):
+            return True
+        # Windows with no title are toolbars, message sinks and other
+        # invisible-in-practice helpers that every Electron app creates.
+        if user32.GetWindowTextLengthW(hwnd) == 0:
+            return True
+        pid = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value:
+            pids.add(pid.value)
+        return True
+
+    if not user32.EnumWindows(callback, 0):
+        return None
+    return pids
 
 
 # ---------------------------------------------------------------- detector
@@ -222,12 +267,13 @@ def running_processes(wanted: set[str]) -> dict[str, list[str]]:
 
 class AppDetector:
     def __init__(self, rules: list[AppRule] | None = None,
-                 linger: float = 25.0):
+                 linger: float = 25.0, require_window: bool = True):
         self.rules = rules if rules is not None else list(BUILTIN_APPS)
-        # How long an app stays on screen after its last write, so the display
-        # does not flicker between the chunks of a single reply. Once this
-        # elapses the app drops out and the screen is released.
+        # How long an app keeps the working status after its last write, so a
+        # reply arriving in chunks does not flicker between working and idle.
         self.linger = linger
+        # Whether an app must own a visible window to count as open at all.
+        self.require_window = require_window
         # key -> mtimes seen recently, used to tell a burst from a lone write.
         self._seen: dict[str, list[tuple[float, float]]] = {}
 
@@ -246,7 +292,9 @@ class AppDetector:
         cutoff = now - rule.burst_window
         history[:] = [entry for entry in history if entry[0] >= cutoff]
 
-        if len(history) < rule.min_changes:
+        # The oldest reading in the window is the baseline it is measured
+        # against, so n readings describe n-1 changes.
+        if len(history) - 1 < rule.min_changes:
             return None
         last_change = history[-1][0]
         if now - last_change > self.linger:
@@ -267,46 +315,56 @@ class AppDetector:
         return newest
 
     def poll(self) -> dict[str, dict]:
-        """Return the AI apps that are actually working, keyed by "app:<key>".
+        """Return the AI apps that are open, keyed by "app:<key>".
 
-        Only working apps are returned. There is deliberately no idle state
-        here: an app we cannot prove is busy has no business holding the screen.
+        An app counts as open while it owns a visible window. Closing it to the
+        notification area leaves the process running, and that must not hold the
+        screen -- half the point of the weather station is that it comes back.
+
+        Status is working while the activity file is changing, idle otherwise.
         """
         wanted = {exe for rule in self.rules for exe in rule.executables}
         if not wanted:
             return {}
         processes = running_processes(wanted)
+        visible = visible_window_pids() if self.require_window else None
         now = time.time()
         found: dict[str, dict] = {}
 
         for rule in self.rules:
             key = f"app:{rule.key}"
-            paths = [p for exe in rule.executables for p in processes.get(exe, [])]
-            running = bool(paths) and (
-                not rule.path_contains
-                or any(rule.path_contains.lower() in p.lower() for p in paths)
-            )
-            if not running:
+            entries = [
+                entry for exe in rule.executables for entry in processes.get(exe, [])
+            ]
+            if rule.path_contains:
+                entries = [
+                    entry for entry in entries
+                    if rule.path_contains.lower() in entry[1].lower()
+                ]
+            if not entries:
                 # Gone: forget its history so a restart starts from scratch.
                 self._seen.pop(key, None)
                 continue
 
-            # With no activity files we can only say the app exists, which is
-            # not a reason to hold the screen, so such rules are skipped here.
-            if not rule.activity:
+            # `visible` is None when the platform cannot answer, in which case
+            # running has to be enough rather than hiding every app.
+            if visible is not None and not any(pid in visible for pid, _ in entries):
+                self._seen.pop(key, None)
                 continue
-            newest = self.newest_activity(rule.activity)
-            if newest is None:
-                continue
-            since = self._working_since(key, newest, rule, now)
-            if since is None:
-                continue
+
+            status = "idle"
+            if rule.activity:
+                newest = self.newest_activity(rule.activity)
+                if newest is not None and self._working_since(
+                    key, newest, rule, now
+                ) is not None:
+                    status = "working"
 
             found[key] = {
                 "provider": rule.provider,
                 "model": rule.model,
-                "status": "working",
-                "age": now - since,
+                "status": status,
+                "age": 0.0,
             }
         return found
 
@@ -346,7 +404,6 @@ if __name__ == "__main__":
         results = detector.poll()
         time.sleep(3)
     if not results:
-        print("  nothing working right now")
-    for key, info in sorted(results.items(), key=lambda kv: kv[1]["age"]):
-        print(f"  {key:<22} {info['model']:<12} {info['status']:<8} "
-              f"last write {info['age']:.0f}s ago")
+        print("  no AI application open (tray-only ones do not count)")
+    for key, info in sorted(results.items()):
+        print(f"  {key:<22} {info['model']:<12} {info['status']}")

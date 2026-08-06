@@ -1,18 +1,21 @@
-"""A lone file write must not put an AI status on screen.
+"""What an AI application on screen should and should not mean.
 
-Desktop apps touch their storage occasionally on their own -- a sync, a
-notification -- with nobody talking to them. Treating one write as activity put
-an AI status on the device for minutes while the user was just browsing the web.
+Two distinctions, both of which got this wrong at some point:
 
-Streaming a reply is different: it writes repeatedly over several seconds. This
-checks that the detector tells the two apart, and that a finished reply releases
-the screen once the linger elapses.
+  open vs merely running -- these apps keep running after you close them to the
+  notification area. A tray-only app must not hold the screen, or the weather
+  station never comes back.
+
+  working vs idle -- they touch their storage on their own for a sync or a
+  notification. Treating one such write as work reported a busy assistant for
+  minutes at a time. A real reply writes repeatedly over several seconds.
 
     python tests/test_app_burst.py
 """
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import time
@@ -20,20 +23,30 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import geekmagic.apps as apps_module  # noqa: E402
 from geekmagic.apps import AppDetector, AppRule  # noqa: E402
 
 failures: list[str] = []
+PID = 4242
 
 
 def check(label: str, got, want) -> None:
     ok = got == want
-    print(f"  {'ok  ' if ok else 'FAIL'} {label:<44} got={got!r} want={want!r}")
+    print(f"  {'ok  ' if ok else 'FAIL'} {label:<46} got={got!r}")
     if not ok:
+        print(f"       {'':<46} want={want!r}")
         failures.append(label)
 
 
-def build(tmp: Path):
-    """A detector watching one file, with every process check satisfied."""
+# Margin kept wide on purpose: a tighter one made this test fail under load,
+# and an intermittently red test is worse than no test at all.
+LINGER = 2.0
+AFTER_LINGER = 5.0
+
+
+def build(linger: float = LINGER):
+    """A detector watching one file, with the platform lookups stubbed out."""
+    tmp = Path(tempfile.mkdtemp())
     activity = tmp / "store.log"
     activity.write_text("x", encoding="utf-8")
     rule = AppRule(
@@ -41,54 +54,69 @@ def build(tmp: Path):
         executables=["fake.exe"], activity=[str(activity)],
         burst_window=25.0, min_changes=2,
     )
-    detector = AppDetector(rules=[rule], linger=3.0)
-    # The process lookup is not what is under test here.
-    detector_running = {"fake.exe": [r"C:\apps\fake.exe"]}
-    import geekmagic.apps as apps_module
-    apps_module.running_processes = lambda wanted: detector_running
-    return detector, activity
+    return AppDetector(rules=[rule], linger=linger), activity
+
+
+def set_platform(running: bool, has_window: bool) -> None:
+    apps_module.running_processes = (
+        (lambda wanted: {"fake.exe": [(PID, r"C:\apps\fake.exe")]})
+        if running else (lambda wanted: {})
+    )
+    apps_module.visible_window_pids = lambda: ({PID} if has_window else set())
+
+
+def status_of(detector) -> str | None:
+    result = detector.poll()
+    return result.get("app:fake", {}).get("status")
 
 
 def touch(path: Path, when: float) -> None:
-    import os
     os.utime(path, (when, when))
 
 
 def main() -> int:
-    tmp = Path(tempfile.mkdtemp())
-    detector, activity = build(tmp)
-    now = time.time()
-
-    print("\nA single background write")
-    touch(activity, now)
-    check("first poll sees it, but one change is not a burst",
-          detector.poll(), {})
-    check("polling again with nothing new stays empty",
-          detector.poll(), {})
-    check("and again", detector.poll(), {})
+    print("\nAn open app with nothing happening")
+    detector, activity = build()
+    set_platform(running=True, has_window=True)
+    check("shows as idle", status_of(detector), "idle")
+    touch(activity, time.time())
+    check("a single background write is not work", status_of(detector), "idle")
+    check("and still is not on the next poll", status_of(detector), "idle")
 
     print("\nA reply streaming in")
-    detector2, activity2 = build(Path(tempfile.mkdtemp()))
+    detector, activity = build()
+    set_platform(running=True, has_window=True)
     base = time.time()
-    touch(activity2, base)
-    detector2.poll()
-    touch(activity2, base + 1)          # second distinct change -> a burst
-    result = detector2.poll()
-    check("two changes inside the window count as working",
-          list(result.keys()), ["app:fake"])
-    check("and the status is working",
-          result.get("app:fake", {}).get("status"), "working")
+    detector.poll()                     # baseline reading
+    for offset in (1, 2):               # two changes on top of it
+        touch(activity, base + offset)
+        status = status_of(detector)
+    check("repeated writes mean working", status, "working")
 
     print("\nThe reply finishes")
-    time.sleep(3.2)                      # longer than linger
-    check("the app drops out once the linger elapses",
-          detector2.poll(), {})
+    time.sleep(AFTER_LINGER)
+    check("falls back to idle, app still open", status_of(detector), "idle")
 
-    print("\nThe app is closed")
-    import geekmagic.apps as apps_module
-    apps_module.running_processes = lambda wanted: {}
-    check("a process that is gone reports nothing",
-          detector2.poll(), {})
+    print("\nClosed to the notification area")
+    set_platform(running=True, has_window=False)
+    check("running with no window shows nothing", detector.poll(), {})
+
+    print("\nReopened")
+    set_platform(running=True, has_window=True)
+    check("visible again, so idle once more", status_of(detector), "idle")
+
+    print("\nQuit entirely")
+    set_platform(running=False, has_window=False)
+    check("no process, nothing to show", detector.poll(), {})
+
+    print("\nA platform that cannot report windows")
+    detector, _ = build()
+    apps_module.running_processes = lambda wanted: {
+        "fake.exe": [(PID, "/usr/bin/fake.exe")]
+    }
+    apps_module.visible_window_pids = lambda: None
+    check("running is enough rather than hiding everything",
+          status_of(detector), "idle")
 
     print()
     if failures:

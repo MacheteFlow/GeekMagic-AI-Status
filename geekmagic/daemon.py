@@ -101,6 +101,7 @@ class Controller:
             AppDetector(
                 rules=list(BUILTIN_APPS) + rules_from_config(cfg.get("extra_apps")),
                 linger=cfg.get("app_linger_seconds", 25.0),
+                require_window=cfg.get("app_require_window", True),
             )
             if cfg.get("detect_apps", True) else None
         )

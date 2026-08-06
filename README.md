@@ -141,9 +141,15 @@ Desktop clients keep their conversations in the cloud and publish no events, so
 they are recognised by their process plus the files they touch while replying.
 Built in: Claude desktop, ChatGPT desktop, Ollama, LM Studio.
 
-An app that is merely open does **not** hold the screen — otherwise a chat
-client left running in the background would mean the weather never returns. It
-counts only while its activity is recent (`app_active_seconds`, 120 by default).
+An app counts as open only while it owns a **visible window**. Closing one to
+the notification area leaves its process running, and a tray icon is not an AI
+session — otherwise the weather would never come back. A window minimised to
+the taskbar still counts.
+
+`WORKING` needs the activity file to change **repeatedly** within a few seconds.
+A single write proves nothing: these apps touch their storage on their own for a
+sync or a notification, and treating one as work reported a busy assistant for
+minutes at a time.
 
 Add your own in `config.json`:
 

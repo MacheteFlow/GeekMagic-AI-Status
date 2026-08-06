@@ -47,10 +47,13 @@ DEFAULTS: dict = {
     # Detect AI applications that publish no events (desktop clients, local
     # model runners) from their process and the files they touch while working.
     "detect_apps": True,
-    # How long an application stays on screen after its last write, so a reply
-    # arriving in chunks does not flicker. Kept short: an app is only shown
-    # while it is demonstrably working, never merely because it is open.
+    # How long an application keeps the working status after its last write, so
+    # a reply arriving in chunks does not flicker between working and idle.
     "app_linger_seconds": 25.0,
+    # Require a visible window before an application counts as open. Closing one
+    # to the notification area leaves its process running, and that should not
+    # hold the screen. Set false to count any running process instead.
+    "app_require_window": True,
     # Extra applications, same fields as the built-in rules in apps.py:
     # {"key", "provider", "model", "executables": [...], "activity": [...]}
     "extra_apps": [],
