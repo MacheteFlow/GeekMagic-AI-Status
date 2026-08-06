@@ -44,6 +44,15 @@ DEFAULTS: dict = {
     "read_account_usage": True,
     "usage_file": None,
     "sessions_dir": None,
+    # Detect AI applications that publish no events (desktop clients, local
+    # model runners) from their process and the files they touch while working.
+    "detect_apps": True,
+    # An application quiet for longer than this stops holding the screen, which
+    # is what lets the weather station come back while it stays open.
+    "app_active_seconds": 120.0,
+    # Extra applications, same fields as the built-in rules in apps.py:
+    # {"key", "provider", "model", "executables": [...], "activity": [...]}
+    "extra_apps": [],
     # Once the editor running a session is gone the session is over, so we do
     # not wait out idle_grace_seconds; just long enough not to flicker while it
     # restarts.

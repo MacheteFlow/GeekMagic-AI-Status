@@ -117,18 +117,64 @@ To undo all of it: **`Uninstall.bat`**, or `python uninstall.py`.
 
 ## Works with other AI tools too
 
-The daemon is not tied to Claude Code — it takes generic states over a small
-local HTTP API, so anything can drive it:
+The daemon is not tied to Claude Code. It gathers state from four sources, and
+uses whichever gives the best evidence:
+
+| Source | Covers | Can report |
+|---|---|---|
+| **Hooks** | Claude Code | `WORKING` · `WAITING` · `IDLE` |
+| **Transcripts** | Claude Code, incl. sessions already open | `WORKING` · `IDLE` |
+| **Applications** | desktop clients and local runners with no events at all | `WORKING` · `IDLE` |
+| **HTTP API** | anything you write yourself | everything |
+
+Only an assistant that tells us can report `WAITING`. From outside a process, a
+session asking you a question is indistinguishable from an idle one — no amount
+of watching files will fix that, so it is not pretended otherwise.
+
+When several are active the most urgent status wins; on a tie the better
+evidenced source does, so a guess from file activity never pushes aside a
+session being followed properly.
+
+### Application detection
+
+Desktop clients keep their conversations in the cloud and publish no events, so
+they are recognised by their process plus the files they touch while replying.
+Built in: Claude desktop, ChatGPT desktop, Ollama, LM Studio.
+
+An app that is merely open does **not** hold the screen — otherwise a chat
+client left running in the background would mean the weather never returns. It
+counts only while its activity is recent (`app_active_seconds`, 120 by default).
+
+Add your own in `config.json`:
+
+```json
+{
+  "extra_apps": [
+    {
+      "key": "my-assistant",
+      "provider": "acme",
+      "model": "Acme Chat",
+      "executables": ["acme.exe"],
+      "activity": ["C:/Users/me/AppData/Roaming/Acme/IndexedDB/*.leveldb/*"]
+    }
+  ]
+}
+```
+
+Choose `activity` paths with care. Many Electron apps rewrite their
+`Local Storage` on a timer whether or not anything is happening, which would
+report the app as permanently busy; conversation data in `IndexedDB` only moves
+during a real exchange. Check a candidate by watching its mtime while the app
+sits idle — it should age steadily and never jump back.
+
+### Driving it yourself
 
 ```bash
 python gmctl.py state --provider openai --model gpt-5 --status working
 python adapters/wrap.py --provider openai --model gpt-5 -- codex
 ```
 
-Claude Code gets the complete integration, including `WAITING`, because it
-exposes the necessary events. For tools without an event system the wrapper
-shows `WORKING` while they run. See **[adapters/README.md](adapters/README.md)**
-for the full API and how to write an integration.
+See **[adapters/README.md](adapters/README.md)** for the full API.
 
 ## Manual use and diagnostics
 

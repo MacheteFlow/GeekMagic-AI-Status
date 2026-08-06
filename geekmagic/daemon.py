@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from .apps import BUILTIN_APPS, AppDetector, rules_from_config
 from .device import THEME_PHOTO_ALBUM, DeviceError, SmallTVUltra
 from .render import frame_key, render_jpeg
 from .usage import AccountUsage
@@ -31,6 +32,11 @@ log = logging.getLogger("geekmagic")
 
 # Increasing priority: with several sessions, the highest value wins.
 STATUS_RANK = {"idle": 0, "working": 1, "error": 2, "waiting": 3}
+
+# Tie-break between sources reporting the same status. Applications are inferred
+# from file activity, which is a guess; a hook is the assistant telling us
+# directly. On equal status the better-evidenced one should be on screen.
+SOURCE_RANK = {"app": 0, "watch": 1, "hook": 2}
 
 IMAGE_DIR = "/image"
 FRAME_PREFIX = "ai_"
@@ -90,6 +96,16 @@ class Controller:
         self.account_usage = (
             AccountUsage(cfg.get("usage_file") or None)
             if cfg.get("read_account_usage", True) else None
+        )
+        # Applications that publish no events: detected by process and by the
+        # files they touch while replying.
+        self.apps: dict[str, Session] = {}
+        self.app_detector = (
+            AppDetector(
+                rules=list(BUILTIN_APPS) + rules_from_config(cfg.get("extra_apps")),
+                active_window=cfg.get("app_active_seconds", 120.0),
+            )
+            if cfg.get("detect_apps", True) else None
         )
         self.lock = threading.Lock()
         self.wake = threading.Event()
@@ -200,23 +216,57 @@ class Controller:
             if covering and now - covering.updated < hook_priority:
                 continue
             live[key] = session
+        # Applications carry their own expiry: the detector only reports them
+        # while their activity is recent, so anything still here is relevant.
+        live.update(self.apps)
         return live
 
     def _winner(self) -> Session | None:
-        """The session that decides what you see: most urgent, then most recent."""
+        """The session that decides what you see.
+
+        Most urgent first, so a question waiting for you is never hidden by
+        something merely busy. Then the best-evidenced source, so a guess made
+        from file activity does not push aside a session we are following
+        properly. Recency settles the rest.
+        """
         live = list(self._live_sessions().values())
         if not live:
             return None
-        return max(live, key=lambda s: (STATUS_RANK.get(s.status, 0), s.updated))
+        return max(live, key=lambda s: (
+            STATUS_RANK.get(s.status, 0),
+            SOURCE_RANK.get(s.source, 0),
+            s.updated,
+        ))
+
+    def _poll_apps(self, now: float) -> None:
+        """Refresh the applications detected by process and file activity."""
+        if self.app_detector is None:
+            return
+        try:
+            found = self.app_detector.poll()
+        except OSError as exc:
+            log.warning("application scan failed: %s", exc)
+            return
+        with self.lock:
+            self.apps = {
+                key: Session(
+                    provider=info["provider"], model=info["model"],
+                    status=info["status"],
+                    usage=self._usage_for(key, info["provider"]),
+                    updated=now - info["age"], source="app",
+                )
+                for key, info in found.items()
+            }
 
     def _poll_watcher(self) -> None:
-        """Refresh the sessions inferred from transcripts."""
-        if self.watcher is None:
-            return
+        """Refresh the sessions inferred from transcripts and applications."""
         now = time.time()
         if now - self.last_watch < self.cfg.get("watch_interval", 2.0):
             return
         self.last_watch = now
+        self._poll_apps(now)
+        if self.watcher is None:
+            return
         try:
             found = self.watcher.poll()
         except OSError as exc:
@@ -256,7 +306,7 @@ class Controller:
                 # climb while you work, and a hook only reports them once.
                 session.usage = self._usage_for(key) or session.usage
 
-    def _usage_for(self, session_id: str) -> dict:
+    def _usage_for(self, session_id: str, provider: str = "anthropic") -> dict:
         """Current usage percentages, from the freshest source available.
 
         The account-wide figures Claude Code keeps in ~/.claude.json are
@@ -264,7 +314,13 @@ class Controller:
         restarted status line. The per-session cache written by the status line
         is the fallback. If neither has anything, no bars get drawn, which beats
         drawing a stale number.
+
+        The figures describe an Anthropic subscription, so they are never shown
+        against another provider's model: a ChatGPT window must not display
+        Claude's remaining quota.
         """
+        if provider and provider.lower() != "anthropic":
+            return {}
         if self.account_usage is not None:
             account = self.account_usage.read()
             if account:
