@@ -1,7 +1,5 @@
 # GeekMagic AI Status
 
-[![tests](https://github.com/MacheteFlow/GeekMagic-AI-Status/actions/workflows/tests.yml/badge.svg)](https://github.com/MacheteFlow/GeekMagic-AI-Status/actions/workflows/tests.yml)
-
 Show which **AI model is working right now** on the screen of a GeekMagic
 SmallTV-Ultra, colour-coded by state, with usage bars for your rate-limit
 windows. When no AI is active the screen goes back to the stock weather station.
