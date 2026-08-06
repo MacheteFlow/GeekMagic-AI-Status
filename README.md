@@ -62,6 +62,14 @@ Hooks are throwaway processes that must finish in milliseconds, so they never
 talk to the device: they POST to the daemon and exit. The daemon coalesces rapid
 changes, draws the frame and sends it.
 
+There is a second, independent detection path. Hooks are loaded when a session
+*starts*, so a session that was already open when you installed this would never
+fire them. The daemon therefore also watches Claude Code's transcript files,
+whose filename is the session id: sessions are picked up straight away, with no
+restart at all. The watcher can tell `WORKING` from `IDLE`, but not `WAITING` —
+from the outside, a session asking you a question looks exactly like an idle
+one. Hooks fill that in when they are available, and always take precedence.
+
 **Each frame is uploaded only once.** The filename is a hash of everything
 visible on it (provider, model, state, bars); if that frame is already on the
 device, only `/set?img=` is called. In steady state the flash is never rewritten
@@ -147,6 +155,17 @@ python gmctl.py gc                      # remove ai_*.jpg frames from the device
 | `max_cached_frames` | `60` | frames kept on the device before the oldest are dropped |
 | `font_path` | `""` | monospace font; empty = first one found on the system |
 | `jpeg_quality` | `88` | frame quality |
+| `watch_transcripts` | `true` | detect sessions from transcripts, without a restart |
+| `watch_working_seconds` | `12` | transcript idle time after which a session counts as idle |
+
+### About the usage bars
+
+They come from `rate_limits` in the status line payload, which Claude Code only
+provides on Claude.ai Pro/Max plans and only after the first response of a
+session. That is the **only** local source — the figures are not in the
+transcripts nor in any session file, so a freshly installed status line needs
+Claude Code restarted once before the bars can appear. Until then the frame
+simply leaves them out, rather than showing a number that might be wrong.
 
 ## Backup and restore
 
